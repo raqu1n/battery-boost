@@ -21,6 +21,7 @@ Key facts:
 ```
 battery-health-widget/
 ├── AGENTS.md                                    # This file
+├── README.md                                    # Project-level overview and install instructions
 ├── battery-health-toggle@batteryhealth-widget/  # Extension source
 │   ├── extension.js                             # Main extension logic
 │   ├── metadata.json                            # Extension manifest
@@ -43,8 +44,9 @@ Main parts:
 - **UI:** `BatteryToggle` extends `QuickToggle`; a `SystemIndicator` hosts it in GNOME's Quick Settings menu.
 - **Lifecycle:** `enable()` sets up the indicator, D-Bus proxy, and settings listener; `disable()` tears everything down.
 - **State:** Settings key `boost-enabled` is a boolean. `false` means the healthy 80% charge limit is active; `true` means the one-cycle 100% boost is active.
-- **Binding:** `BatteryToggle` binds the `boost-enabled` setting directly to its `checked` property via `Gio.Settings.bind()`.
-- **Auto-revert:** When boost is active, the extension reverts to `false` automatically when AC power is disconnected or the battery reaches 100%.
+- **UI sync:** `BatteryToggle` listens to `changed::boost-enabled` and assigns `this.checked` manually. It also handles the `clicked` signal to update the setting.
+- **Auto-revert:** When boost is active, the extension reverts to `false` automatically on a **transition** to AC disconnected (battery state changes into discharging) or on a transition to 100% charge. It does not revert merely because the current state is discharging or already at 100%.
+- **Interactivity:** `BatteryToggle` forces `sensitive`, `reactive`, and `can_focus` to `true` and guards them with `notify` handlers so the shell cannot make the toggle unclickable.
 
 ### `metadata.json`
 
@@ -135,14 +137,14 @@ Only hardware and UPower versions that expose `ChargeThresholdSupported` and `En
 - Use `const` and `let`; avoid `var`.
 - Prefix private instance properties with `_` (e.g. `this._settings`).
 - Use `gettext as _` for translatable strings.
-- Handle D-Bus and proxy errors with `try/catch` and log with `console.error('[BatteryHealth] ...')`.
+- Handle D-Bus and proxy errors with `try/catch` and log with `console.error('[BatteryBoost] ...')`.
 - Use `signal_handler_block` / `signal_handler_unblock` when updating GSettings to avoid recursive change handlers.
 
 ## Security considerations
 
 - The extension operates on the **system D-Bus** (`Gio.DBus.system`) with UPower. It calls `EnableChargeThreshold` to change hardware charge limits.
 - The extension does not persist passwords, store secrets, or execute arbitrary commands.
-- The only writable state is the single GSettings key `charge-mode` and the UPower threshold.
+- The only writable state is the single GSettings key `boost-enabled` and the UPower threshold.
 - The zip distributable should not include unrelated files such as `.git`, editor backups, or environment files. `gnome-extensions pack` generally handles this, but verify the contents of generated zips when adding new files.
 
 ## Notes for agents
