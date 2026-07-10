@@ -1,5 +1,4 @@
 import Gio from 'gi://Gio';
-import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 
 import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/extension.js';
@@ -58,6 +57,24 @@ class BatteryToggle extends QuickToggle {
         // Synchronize initial state.
         this.checked = this._settings.get_boolean('boost-enabled');
 
+        // Ensure the toggle stays interactive regardless of system state.
+        this.sensitive = true;
+        this.reactive = true;
+        this.can_focus = true;
+
+        this._sensitiveId = this.connect('notify::sensitive', () => {
+            if (!this.sensitive) {
+                console.log('[BatteryBoost] shell made toggle insensitive, forcing back to true');
+                this.sensitive = true;
+            }
+        });
+        this._reactiveId = this.connect('notify::reactive', () => {
+            if (!this.reactive) {
+                console.log('[BatteryBoost] shell made toggle non-reactive, forcing back to true');
+                this.reactive = true;
+            }
+        });
+
         // Update the toggle when the setting changes (including auto-revert).
         this._settingsId = this._settings.connect('changed::boost-enabled', () => {
             this.checked = this._settings.get_boolean('boost-enabled');
@@ -74,6 +91,14 @@ class BatteryToggle extends QuickToggle {
             this._settings.disconnect(this._settingsId);
             this._settingsId = null;
         }
+        if (this._sensitiveId) {
+            this.disconnect(this._sensitiveId);
+            this._sensitiveId = null;
+        }
+        if (this._reactiveId) {
+            this.disconnect(this._reactiveId);
+            this._reactiveId = null;
+        }
         super.destroy();
     }
 });
@@ -82,6 +107,7 @@ export default class BatteryBoostExtension extends Extension {
     enable() {
         this._settings = this.getSettings();
         this._boostActive = false;
+        this._previousState = -1;
         this._deviceProxy = null;
         this._upowerProxy = null;
         this._thresholdSupported = false;
@@ -180,12 +206,13 @@ export default class BatteryBoostExtension extends Extension {
 
             this._deviceProxy = proxy;
             this._thresholdSupported = proxy.ChargeThresholdSupported;
+            this._previousState = proxy.State;
+            this._previousPercentage = proxy.Percentage;
             this._deviceChangedId = proxy.connect('g-properties-changed',
                 (_proxy, changed) => {
                     this._onDeviceChanged(changed);
                 });
 
-            this._startPolling();
             this._syncFromUPower();
             return true;
         } catch (e) {
@@ -194,47 +221,12 @@ export default class BatteryBoostExtension extends Extension {
     }
 
     _unwatchDevice() {
-        this._stopPolling();
         if (this._deviceProxy) {
             if (this._deviceChangedId) {
                 this._deviceProxy.disconnect(this._deviceChangedId);
             }
             this._deviceProxy = null;
         }
-    }
-
-    _startPolling() {
-        this._stopPolling();
-        this._pollId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => {
-            this._pollUPower();
-            return GLib.SOURCE_CONTINUE;
-        });
-    }
-
-    _stopPolling() {
-        if (this._pollId) {
-            GLib.Source.remove(this._pollId);
-            this._pollId = null;
-        }
-    }
-
-    _pollUPower() {
-        if (!this._deviceProxy) return GLib.SOURCE_REMOVE;
-
-        // Auto-revert checks, in case the D-Bus property change signal is missed.
-        if (!this._boostActive) return GLib.SOURCE_CONTINUE;
-        if (!this._settings.get_boolean('boost-enabled')) return GLib.SOURCE_CONTINUE;
-
-        const state = this._deviceProxy.State;
-        const percentage = this._deviceProxy.Percentage;
-
-        if (state === 2) {
-            this._revertToHealthy(_('AC disconnected'));
-        } else if (percentage >= 100.0 && (state === 1 || state === 4)) {
-            this._revertToHealthy(_('Battery fully charged'));
-        }
-
-        return GLib.SOURCE_CONTINUE;
     }
 
     _onDeviceChanged(changed) {
@@ -252,16 +244,24 @@ export default class BatteryBoostExtension extends Extension {
         const state = this._deviceProxy.State;
         const percentage = this._deviceProxy.Percentage;
 
-        // AC disconnected: charging -> discharging
-        if (stateChanged && state === 2) {
+        // AC disconnected: transition into discharging (state 2).
+        // Do not revert just because the current state is discharging.
+        if (stateChanged && this._previousState !== 2 && state === 2) {
+            this._previousState = state;
             this._revertToHealthy(_('AC disconnected'));
             return;
         }
 
-        // Battery reached 100% while charging or fully charged
-        if (pctChanged && percentage >= 100.0 && (state === 1 || state === 4)) {
+        // Battery reached 100% while charging or fully charged.
+        if (pctChanged && this._previousPercentage < 100.0 && percentage >= 100.0 &&
+            (state === 1 || state === 4)) {
+            this._previousPercentage = percentage;
             this._revertToHealthy(_('Battery fully charged'));
+            return;
         }
+
+        if (stateChanged) this._previousState = state;
+        if (pctChanged) this._previousPercentage = percentage;
     }
 
     _syncFromUPower() {
