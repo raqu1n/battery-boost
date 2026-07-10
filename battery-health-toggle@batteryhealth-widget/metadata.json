@@ -1,0 +1,9 @@
+{
+  "uuid": "battery-health-toggle@batteryhealth-widget",
+  "name": "Battery Boost",
+  "description": "Quick Settings toggle to boost battery charging to 100% for one cycle. Automatically reverts to the healthy 80% limit when AC is unplugged or the battery reaches 100%.",
+  "version": 1,
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "url": "https://github.com/example/battery-health-toggle",
+  "settings-schema": "org.gnome.shell.extensions.battery-health-toggle"
+}
