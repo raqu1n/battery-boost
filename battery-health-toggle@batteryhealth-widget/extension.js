@@ -60,10 +60,7 @@ class BatteryToggle extends QuickToggle {
 
         // Update the toggle when the setting changes (including auto-revert).
         this._settingsId = this._settings.connect('changed::boost-enabled', () => {
-            const value = this._settings.get_boolean('boost-enabled');
-            console.log(`[BatteryBoost] toggle setting changed: ${value}, old checked=${this.checked}`);
-            this.checked = value;
-            console.log(`[BatteryBoost] toggle checked now: ${this.checked}`);
+            this.checked = this._settings.get_boolean('boost-enabled');
         });
 
         // Update the setting when the user clicks the toggle.
@@ -272,7 +269,6 @@ export default class BatteryBoostExtension extends Extension {
 
         const enabled = this._deviceProxy.ChargeThresholdEnabled;
         const boostEnabled = !enabled;
-        console.log(`[BatteryBoost] syncFromUPower: thresholdEnabled=${enabled}, boost=${boostEnabled}, setting=${this._settings.get_boolean('boost-enabled')}, boostActive=${this._boostActive}`);
 
         // Update the setting to match UPower state, without triggering _onModeChanged.
         if (this._settings.get_boolean('boost-enabled') !== boostEnabled) {
@@ -307,7 +303,6 @@ export default class BatteryBoostExtension extends Extension {
     _revertToHealthy(reason) {
         if (!this._boostActive) return;
         this._boostActive = false;
-        console.log(`[BatteryBoost] Reverting to 80%: ${reason}, setting=${this._settings.get_boolean('boost-enabled')}`);
 
         this._setThresholdEnabled(true, (success, error) => {
             if (success) {
@@ -315,7 +310,6 @@ export default class BatteryBoostExtension extends Extension {
                 // Update the setting directly; the GSettings binding will
                 // turn off the QuickToggle highlight immediately.
                 // Block our own handler to avoid a redundant UPower call.
-                console.log('[BatteryBoost] setting boost-enabled=false in revert callback');
                 GObject.signal_handler_block(this._settings, this._settingsChangedId);
                 this._settings.set_boolean('boost-enabled', false);
                 GObject.signal_handler_unblock(this._settings, this._settingsChangedId);
