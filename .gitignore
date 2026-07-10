@@ -1,0 +1,17 @@
+# Build artifacts
+*.shell-extension.zip
+battery-health-toggle@batteryhealth-widget/schemas/gschemas.compiled
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
