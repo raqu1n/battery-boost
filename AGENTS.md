@@ -22,16 +22,18 @@ Key facts:
 battery-health-widget/
 ├── AGENTS.md                                    # This file
 ├── README.md                                    # Project-level overview and install instructions
-├── battery-health-toggle@batteryhealth-widget/  # Extension source
+├── .gitignore                                   # Ignore build artifacts, editors, OS files
+├── scripts/
+│   └── build.sh                                 # Build script: compile schema and pack zip
+├── src/                                         # Extension source
 │   ├── extension.js                             # Main extension logic
 │   ├── metadata.json                            # Extension manifest
 │   ├── stylesheet.css                           # Extension-specific styles
 │   ├── README.md                                # User-facing documentation
 │   └── schemas/
-│       ├── gschemas.compiled                    # Compiled binary schema
 │       └── org.gnome.shell.extensions.battery-health-toggle.gschema.xml
-└── battery-health-toggle@batteryhealth-widget.shell-extension.zip
-                                                 # Packaged distributable
+├── build/                                       # Temporary build directory (ignored by git)
+└── dist/                                        # Packaged distributable (ignored by git)
 ```
 
 ### `extension.js`
@@ -83,15 +85,13 @@ Placeholder stylesheet. Currently contains no rules. Add custom styling here if 
 
 ## Build process
 
-There is no build step that compiles JavaScript. The extension ships as JavaScript source.
+The extension ships as JavaScript source. The build script copies the source into a UUID-named directory, compiles the GSettings schema, and packs the zip.
 
 ### Local install
 
 ```bash
-cd battery-health-toggle@batteryhealth-widget
-glib-compile-schemas schemas/
-mkdir -p ~/.local/share/gnome-shell/extensions
-cp -r "$(pwd)" ~/.local/share/gnome-shell/extensions/
+./scripts/build.sh
+gnome-extensions install dist/battery-health-toggle@batteryhealth-widget.shell-extension.zip
 gnome-extensions enable battery-health-toggle@batteryhealth-widget
 ```
 
@@ -103,27 +103,30 @@ Restart GNOME Shell after installing:
 ### Build distributable zip
 
 ```bash
-gnome-extensions pack battery-health-toggle@batteryhealth-widget
+./scripts/build.sh
 ```
 
-This produces `battery-health-toggle@batteryhealth-widget.shell-extension.zip` in the repository root. The zip in the repository was created this way.
+This produces `dist/battery-health-toggle@batteryhealth-widget.shell-extension.zip`.
+
+You can also build manually with `gnome-extensions pack src/` if you prefer not to use the script.
 
 ## Testing instructions
 
 The project has no automated test suite. Validation is manual:
 
-1. Install the extension locally.
-2. Open the system menu and verify the "Battery Boost" toggle appears.
-3. Click the toggle and confirm the setting changes via GSettings:
+1. Build the extension: `./scripts/build.sh`.
+2. Install the produced zip and enable it.
+3. Open the system menu and verify the "Battery Boost" toggle appears.
+4. Click the toggle and confirm the setting changes via GSettings:
    ```bash
    gsettings get org.gnome.shell.extensions.battery-health-toggle boost-enabled
    ```
-4. Verify the underlying UPower state:
+5. Verify the underlying UPower state:
    ```bash
    upower -i /org/freedesktop/UPower/devices/battery_BAT0 | grep charge-threshold
    ```
-5. If supported, confirm that maximum mode reverts to healthy after unplugging AC or reaching 100%.
-6. Watch logs during testing:
+6. If supported, confirm that maximum mode reverts to healthy after unplugging AC or reaching 100%.
+7. Watch logs during testing:
    ```bash
    journalctl -f -o cat /usr/bin/gnome-shell
    ```
@@ -151,5 +154,6 @@ Only hardware and UPower versions that expose `ChargeThresholdSupported` and `En
 
 - There is no `package.json`, `Cargo.toml`, `pyproject.toml`, or similar manifest. The source of truth is `metadata.json` plus the GSettings schema.
 - The repository has no CI configuration yet.
-- The existing `gschemas.compiled` binary is checked in; regenerate it with `glib-compile-schemas schemas/` after any schema XML change.
-- The zip file at the repository root is the release artifact. Rebuild it with `gnome-extensions pack` before distributing.
+- Source files live in `src/`; do not edit files inside `build/` because they are regenerated.
+- Regenerate the distributable zip with `./scripts/build.sh` after any source change.
+- `build/` and `dist/` are ignored by git; they are created on demand by the build script.

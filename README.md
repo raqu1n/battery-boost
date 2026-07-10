@@ -32,13 +32,16 @@ Then restart GNOME Shell:
 
 ### From source
 
+Build the extension first:
+
 ```bash
-cd battery-health-toggle@batteryhealth-widget
-glib-compile-schemas schemas/
+./scripts/build.sh
+```
 
-mkdir -p ~/.local/share/gnome-shell/extensions
-cp -r "$(pwd)" ~/.local/share/gnome-shell/extensions/
+Then install the produced zip:
 
+```bash
+gnome-extensions install dist/battery-health-toggle@batteryhealth-widget.shell-extension.zip
 gnome-extensions enable battery-health-toggle@batteryhealth-widget
 ```
 
@@ -47,10 +50,16 @@ Then restart GNOME Shell as described above.
 ## Building the zip
 
 ```bash
-gnome-extensions pack battery-health-toggle@batteryhealth-widget
+./scripts/build.sh
 ```
 
-This produces `battery-health-toggle@batteryhealth-widget.shell-extension.zip`.
+This produces `dist/battery-health-toggle@batteryhealth-widget.shell-extension.zip`.
+
+You can also build manually:
+
+```bash
+gnome-extensions pack src
+```
 
 ## Usage
 

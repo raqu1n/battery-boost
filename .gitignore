@@ -1,6 +1,8 @@
 # Build artifacts
+build/
+dist/
 *.shell-extension.zip
-battery-health-toggle@batteryhealth-widget/schemas/gschemas.compiled
+src/schemas/gschemas.compiled
 
 # Editor / IDE
 .vscode/
@@ -15,3 +17,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Session / runtime
+kimi.md
