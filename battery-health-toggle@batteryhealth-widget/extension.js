@@ -30,7 +30,6 @@ const UPowerDeviceIface = `
     <method name="EnableChargeThreshold">
       <arg type="b" direction="in"/>
     </method>
-    <method name="Refresh"/>
     <property name="Type" type="u" access="read"/>
     <property name="PowerSupply" type="b" access="read"/>
     <property name="State" type="u" access="read"/>
@@ -61,7 +60,10 @@ class BatteryToggle extends QuickToggle {
 
         // Update the toggle when the setting changes (including auto-revert).
         this._settingsId = this._settings.connect('changed::boost-enabled', () => {
-            this.checked = this._settings.get_boolean('boost-enabled');
+            const value = this._settings.get_boolean('boost-enabled');
+            console.log(`[BatteryBoost] toggle setting changed: ${value}, old checked=${this.checked}`);
+            this.checked = value;
+            console.log(`[BatteryBoost] toggle checked now: ${this.checked}`);
         });
 
         // Update the setting when the user clicks the toggle.
@@ -222,27 +224,18 @@ export default class BatteryBoostExtension extends Extension {
     _pollUPower() {
         if (!this._deviceProxy) return GLib.SOURCE_REMOVE;
 
-        this._deviceProxy.RefreshRemote((result, error) => {
-            if (error) {
-                console.error(`[BatteryBoost] Refresh failed: ${error.message}`);
-                return;
-            }
+        // Auto-revert checks, in case the D-Bus property change signal is missed.
+        if (!this._boostActive) return GLib.SOURCE_CONTINUE;
+        if (!this._settings.get_boolean('boost-enabled')) return GLib.SOURCE_CONTINUE;
 
-            this._syncFromUPower();
+        const state = this._deviceProxy.State;
+        const percentage = this._deviceProxy.Percentage;
 
-            // Auto-revert checks, in case the D-Bus property change signal is missed.
-            if (!this._boostActive) return;
-            if (!this._settings.get_boolean('boost-enabled')) return;
-
-            const state = this._deviceProxy.State;
-            const percentage = this._deviceProxy.Percentage;
-
-            if (state === 2) {
-                this._revertToHealthy(_('AC disconnected'));
-            } else if (percentage >= 100.0 && (state === 1 || state === 4)) {
-                this._revertToHealthy(_('Battery fully charged'));
-            }
-        });
+        if (state === 2) {
+            this._revertToHealthy(_('AC disconnected'));
+        } else if (percentage >= 100.0 && (state === 1 || state === 4)) {
+            this._revertToHealthy(_('Battery fully charged'));
+        }
 
         return GLib.SOURCE_CONTINUE;
     }
@@ -279,12 +272,13 @@ export default class BatteryBoostExtension extends Extension {
 
         const enabled = this._deviceProxy.ChargeThresholdEnabled;
         const boostEnabled = !enabled;
+        console.log(`[BatteryBoost] syncFromUPower: thresholdEnabled=${enabled}, boost=${boostEnabled}, setting=${this._settings.get_boolean('boost-enabled')}, boostActive=${this._boostActive}`);
 
         // Update the setting to match UPower state, without triggering _onModeChanged.
         if (this._settings.get_boolean('boost-enabled') !== boostEnabled) {
-            this._settings.signal_handler_block(this._settingsChangedId);
+            GObject.signal_handler_block(this._settings, this._settingsChangedId);
             this._settings.set_boolean('boost-enabled', boostEnabled);
-            this._settings.signal_handler_unblock(this._settingsChangedId);
+            GObject.signal_handler_unblock(this._settings, this._settingsChangedId);
         }
 
         this._boostActive = boostEnabled;
@@ -303,9 +297,9 @@ export default class BatteryBoostExtension extends Extension {
                 console.error(`[BatteryBoost] Failed to set threshold: ${error}`);
                 this._notify(_('Failed to change battery charge limit'));
                 // Revert the setting on failure without triggering _onModeChanged again.
-                this._settings.signal_handler_block(this._settingsChangedId);
+                GObject.signal_handler_block(this._settings, this._settingsChangedId);
                 this._settings.set_boolean('boost-enabled', !boostEnabled);
-                this._settings.signal_handler_unblock(this._settingsChangedId);
+                GObject.signal_handler_unblock(this._settings, this._settingsChangedId);
             }
         });
     }
@@ -313,7 +307,7 @@ export default class BatteryBoostExtension extends Extension {
     _revertToHealthy(reason) {
         if (!this._boostActive) return;
         this._boostActive = false;
-        console.log(`[BatteryBoost] Reverting to 80%: ${reason}`);
+        console.log(`[BatteryBoost] Reverting to 80%: ${reason}, setting=${this._settings.get_boolean('boost-enabled')}`);
 
         this._setThresholdEnabled(true, (success, error) => {
             if (success) {
@@ -321,9 +315,10 @@ export default class BatteryBoostExtension extends Extension {
                 // Update the setting directly; the GSettings binding will
                 // turn off the QuickToggle highlight immediately.
                 // Block our own handler to avoid a redundant UPower call.
-                this._settings.signal_handler_block(this._settingsChangedId);
+                console.log('[BatteryBoost] setting boost-enabled=false in revert callback');
+                GObject.signal_handler_block(this._settings, this._settingsChangedId);
                 this._settings.set_boolean('boost-enabled', false);
-                this._settings.signal_handler_unblock(this._settingsChangedId);
+                GObject.signal_handler_unblock(this._settings, this._settingsChangedId);
             } else {
                 console.error(`[BatteryBoost] Auto-revert failed: ${error}`);
             }
