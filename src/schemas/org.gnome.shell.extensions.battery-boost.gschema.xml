@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.battery-boost"
+          path="/org/gnome/shell/extensions/battery-boost/">
+    <key name="boost-enabled" type="b">
+      <default>false</default>
+      <summary>Battery boost enabled</summary>
+      <description>Whether charging to 100% is enabled for the current cycle.</description>
+    </key>
+  </schema>
+</schemalist>

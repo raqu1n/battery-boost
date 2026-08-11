@@ -3,38 +3,38 @@
 
 set -euo pipefail
 
-UUID="battery-health-toggle@batteryhealth-widget"
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC_DIR="${PROJECT_ROOT}/src"
-BUILD_DIR="${PROJECT_ROOT}/build/${UUID}"
 DIST_DIR="${PROJECT_ROOT}/dist"
-ZIP_NAME="${UUID}.shell-extension.zip"
+UUID="$(sed -n 's/^[[:space:]]*"uuid":[[:space:]]*"\([^"]*\)".*/\1/p' "${SRC_DIR}/metadata.json")"
+SCHEMA_ID="$(sed -n 's/^[[:space:]]*"settings-schema":[[:space:]]*"\([^"]*\)".*/\1/p' "${SRC_DIR}/metadata.json")"
 
-echo "Building ${UUID}..."
-
-# Clean previous build
-rm -rf "${BUILD_DIR}"
-mkdir -p "${BUILD_DIR}"
-
-# Copy source files
-cp -r "${SRC_DIR}"/* "${BUILD_DIR}/"
-
-# Compile GSettings schema
-if [ -f "${BUILD_DIR}/schemas/org.gnome.shell.extensions.battery-health-toggle.gschema.xml" ]; then
-    echo "Compiling GSettings schema..."
-    glib-compile-schemas "${BUILD_DIR}/schemas/"
+if [[ -z "${UUID}" ]]; then
+    echo "Could not read the extension UUID from metadata.json" >&2
+    exit 1
+fi
+if [[ -z "${SCHEMA_ID}" ||
+    ! -f "${SRC_DIR}/schemas/${SCHEMA_ID}.gschema.xml" ]]; then
+    echo "metadata.json does not reference a matching schema file" >&2
+    exit 1
 fi
 
-# Create distributable zip
-mkdir -p "${DIST_DIR}"
-rm -f "${DIST_DIR}/${ZIP_NAME}"
+echo "Validating GSettings schema..."
+glib-compile-schemas --strict --dry-run "${SRC_DIR}/schemas"
 
-echo "Packing extension..."
+mkdir -p "${DIST_DIR}"
+
+echo "Packing ${UUID}..."
 gnome-extensions pack \
     --force \
     --extra-source=schemas \
-    --extra-source=stylesheet.css \
     --out-dir="${DIST_DIR}" \
-    "${BUILD_DIR}"
+    "${SRC_DIR}"
 
-echo "Built: ${DIST_DIR}/${ZIP_NAME}"
+ZIP_PATH="${DIST_DIR}/${UUID}.shell-extension.zip"
+if [[ ! -f "${ZIP_PATH}" ]]; then
+    echo "Expected package was not created: ${ZIP_PATH}" >&2
+    exit 1
+fi
+
+echo "Built: ${ZIP_PATH}"
