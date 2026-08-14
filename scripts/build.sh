@@ -27,10 +27,18 @@ echo "Compiling TypeScript..."
 rm -rf "${BUILD_DIR}"
 npm --prefix "${PROJECT_ROOT}" run build
 
-if [[ ! -f "${BUILD_DIR}/extension.js" ]]; then
-    echo "TypeScript did not produce build/extension.js" >&2
-    exit 1
-fi
+RUNTIME_FILES=(
+    "extension.js"
+    "ui/batteryIndicator.js"
+    "upower/batteryService.js"
+    "upower/proxies.js"
+)
+for runtime_file in "${RUNTIME_FILES[@]}"; do
+    if [[ ! -f "${BUILD_DIR}/${runtime_file}" ]]; then
+        echo "TypeScript did not produce build/${runtime_file}" >&2
+        exit 1
+    fi
+done
 
 mkdir -p "${BUILD_DIR}/schemas" "${DIST_DIR}"
 cp "${SRC_DIR}/metadata.json" "${BUILD_DIR}/metadata.json"
@@ -40,6 +48,8 @@ echo "Packing ${UUID}..."
 gnome-extensions pack \
     --force \
     --extra-source=schemas \
+    --extra-source=ui \
+    --extra-source=upower \
     --out-dir="${DIST_DIR}" \
     "${BUILD_DIR}"
 

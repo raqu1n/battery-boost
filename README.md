@@ -56,8 +56,8 @@ npm ci
 ./scripts/build.sh
 ```
 
-The build compiles `src/extension.ts` to readable JavaScript, validates the
-GSettings schema, and produces
+The build compiles the TypeScript modules under `src/` to readable JavaScript,
+validates the GSettings schema, and produces
 `dist/battery-boost@maltehegel.github.io.shell-extension.zip`.
 
 For a strict type check without emitting JavaScript:
@@ -82,8 +82,9 @@ Watch logs:
 journalctl -f -o cat /usr/bin/gnome-shell
 ```
 
-The TypeScript extension source lives in `src/`. Generated JavaScript is placed
-in `build/` and is not committed.
+The TypeScript extension source lives in `src/`, split into the extension
+coordinator, Quick Settings UI, and UPower service modules. Generated JavaScript
+is placed in `build/` and is not committed.
 
 ## License
 
