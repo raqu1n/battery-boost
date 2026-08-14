@@ -1,0 +1,17 @@
+{
+  "name": "battery-boost",
+  "version": "0.0.0",
+  "description": "GNOME Shell extension for temporarily charging a battery to 100%",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@girs/gjs": "^4.1.0",
+    "@girs/gnome-shell": "^50.0.4",
+    "typescript": "^7.0.2"
+  }
+}

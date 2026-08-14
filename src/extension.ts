@@ -1,5 +1,6 @@
 import Gio from 'gi://Gio';
 import GObject from 'gi://GObject';
+import type GLib from 'gi://GLib';
 
 import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -14,7 +15,7 @@ const DeviceState = Object.freeze({
     CHARGING: 1,
     DISCHARGING: 2,
     FULLY_CHARGED: 4,
-});
+} as const);
 
 const UPowerIface = `
 <node>
@@ -47,39 +48,118 @@ const UPowerDeviceIface = `
   </interface>
 </node>`;
 
-const UPowerProxy = Gio.DBusProxy.makeProxyWrapper(UPowerIface);
-const UPowerDeviceProxy = Gio.DBusProxy.makeProxyWrapper(UPowerDeviceIface);
+type UPowerSignal = 'DeviceAdded' | 'DeviceRemoved';
+
+interface UPowerProxy {
+    EnumerateDevicesAsync(
+        cancellable: Gio.Cancellable | null
+    ): Promise<[string[]]>;
+    connectSignal(
+        signal: UPowerSignal,
+        callback: (
+            proxy: UPowerProxy,
+            sender: string,
+            parameters: [string]
+        ) => void
+    ): number;
+    disconnectSignal(handlerId: number): void;
+}
+
+interface UPowerDeviceProxy {
+    readonly Type: number;
+    readonly PowerSupply: boolean;
+    readonly State: number;
+    readonly Percentage: number;
+    readonly IsPresent: boolean;
+    readonly ChargeThresholdEnabled: boolean;
+    readonly ChargeThresholdSupported: boolean;
+
+    EnableChargeThresholdRemote(
+        enabled: boolean,
+        callback: (result: unknown, error: unknown | null) => void
+    ): void;
+    connect(
+        signal: 'g-properties-changed',
+        callback: (
+            proxy: UPowerDeviceProxy,
+            changed: GLib.Variant
+        ) => void
+    ): number;
+    disconnect(handlerId: number): void;
+}
+
+interface AsyncProxyConstructor<T> {
+    newAsync(
+        connection: Gio.DBusConnection,
+        busName: string,
+        objectPath: string,
+        cancellable: Gio.Cancellable | null
+    ): Promise<T>;
+}
+
+type SettingsConstructor<T> = new(settings: Gio.Settings) => T;
+
+function makeAsyncProxy<T>(interfaceXml: string): AsyncProxyConstructor<T> {
+    // makeProxyWrapper() creates members from XML at runtime, which TypeScript
+    // cannot infer. Keep that assertion at this boundary and type all uses.
+    return Gio.DBusProxy.makeProxyWrapper(interfaceXml) as unknown as
+        AsyncProxyConstructor<T>;
+}
+
+function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
+
+const UPowerProxy = makeAsyncProxy<UPowerProxy>(UPowerIface);
+const UPowerDeviceProxy = makeAsyncProxy<UPowerDeviceProxy>(
+    UPowerDeviceIface);
 
 const BatteryToggle = GObject.registerClass(
 class BatteryToggle extends QuickToggle {
-    _init(settings) {
+    _init(settings?: unknown): void {
         super._init({
             title: _('Battery Boost'),
             iconName: 'battery-full-symbolic',
             toggleMode: true,
         });
 
-        settings.bind(SETTINGS_KEY, this, 'checked',
+        (settings as Gio.Settings).bind(SETTINGS_KEY, this, 'checked',
             Gio.SettingsBindFlags.DEFAULT);
     }
-});
+}) as unknown as SettingsConstructor<QuickToggle>;
 
 const BatteryIndicator = GObject.registerClass(
 class BatteryIndicator extends SystemIndicator {
-    _init(settings) {
+    _init(settings?: unknown): void {
         super._init();
 
-        this.quickSettingsItems.push(new BatteryToggle(settings));
+        this.quickSettingsItems.push(
+            new BatteryToggle(settings as Gio.Settings));
     }
 
-    destroy() {
+    destroy(): void {
         this.quickSettingsItems.forEach(item => item.destroy());
         super.destroy();
     }
-});
+}) as unknown as SettingsConstructor<SystemIndicator>;
 
 export default class BatteryBoostExtension extends Extension {
-    enable() {
+    private _settings: Gio.Settings | null = null;
+    private _settingsChangedId: number | null = null;
+    private _cancellable: Gio.Cancellable | null = null;
+    private _operationSerial = 0;
+    private _deviceSerial = 0;
+    private _upowerProxy: UPowerProxy | null = null;
+    private _deviceProxy: UPowerDeviceProxy | null = null;
+    private _devicePath: string | null = null;
+    private _previousState: number | null = null;
+    private _previousPercentage: number | null = null;
+    private _indicator: SystemIndicator | null = null;
+    private _deviceAddedId: number | null = null;
+    private _deviceRemovedId: number | null = null;
+    private _deviceChangedId: number | null = null;
+
+    enable(): void {
         this._settings = this.getSettings();
         this._settingsChangedId = this._settings.connect(
             `changed::${SETTINGS_KEY}`, () => this._onModeChanged());
@@ -94,21 +174,21 @@ export default class BatteryBoostExtension extends Extension {
         this._previousPercentage = null;
 
         this._indicator = new BatteryIndicator(this._settings);
-        Main.panel.statusArea.quickSettings.addExternalIndicator(this._indicator);
+        Main.panel.statusArea.quickSettings!.addExternalIndicator(
+            this._indicator);
 
-        this._setupUPower();
+        void this._setupUPower();
     }
 
-    disable() {
+    disable(): void {
         const cancellable = this._cancellable;
         this._cancellable = null;
-        if (cancellable)
-            cancellable.cancel();
+        cancellable?.cancel();
 
         this._operationSerial++;
         this._deviceSerial++;
 
-        if (this._settingsChangedId) {
+        if (this._settings && this._settingsChangedId) {
             this._settings.disconnect(this._settingsChangedId);
             this._settingsChangedId = null;
         }
@@ -124,8 +204,10 @@ export default class BatteryBoostExtension extends Extension {
         this._settings = null;
     }
 
-    async _setupUPower() {
+    private async _setupUPower(): Promise<void> {
         const cancellable = this._cancellable;
+        if (!cancellable)
+            return;
 
         try {
             const proxy = await UPowerProxy.newAsync(
@@ -142,7 +224,7 @@ export default class BatteryBoostExtension extends Extension {
             this._deviceAddedId = proxy.connectSignal(
                 'DeviceAdded', (_proxy, _sender, [devicePath]) => {
                     if (!this._deviceProxy)
-                        this._tryDevice(devicePath, cancellable);
+                        void this._tryDevice(devicePath, cancellable);
                 });
             this._deviceRemovedId = proxy.connectSignal(
                 'DeviceRemoved', (_proxy, _sender, [devicePath]) => {
@@ -155,19 +237,20 @@ export default class BatteryBoostExtension extends Extension {
                     }
 
                     if (!this._deviceProxy)
-                        this._findBatteryDevice(cancellable);
+                        void this._findBatteryDevice(cancellable);
                 });
 
             await this._findBatteryDevice(cancellable);
-        } catch (e) {
+        } catch (error) {
             if (this._cancellable !== cancellable)
                 return;
 
-            console.error(`[BatteryBoost] Failed to connect to UPower: ${e.message}`);
+            console.error(
+                `[BatteryBoost] Failed to connect to UPower: ${errorMessage(error)}`);
         }
     }
 
-    _unwatchUPower() {
+    private _unwatchUPower(): void {
         if (this._upowerProxy) {
             if (this._deviceAddedId)
                 this._upowerProxy.disconnectSignal(this._deviceAddedId);
@@ -180,7 +263,9 @@ export default class BatteryBoostExtension extends Extension {
         this._upowerProxy = null;
     }
 
-    async _findBatteryDevice(cancellable = this._cancellable) {
+    private async _findBatteryDevice(
+        cancellable: Gio.Cancellable | null = this._cancellable
+    ): Promise<void> {
         const upowerProxy = this._upowerProxy;
         if (!upowerProxy || this._deviceProxy ||
             this._cancellable !== cancellable)
@@ -198,16 +283,20 @@ export default class BatteryBoostExtension extends Extension {
                 if (await this._tryDevice(devicePath, cancellable))
                     break;
             }
-        } catch (e) {
+        } catch (error) {
             if (this._upowerProxy !== upowerProxy ||
                 this._cancellable !== cancellable)
                 return;
 
-            console.error(`[BatteryBoost] EnumerateDevices failed: ${e.message}`);
+            console.error(
+                `[BatteryBoost] EnumerateDevices failed: ${errorMessage(error)}`);
         }
     }
 
-    async _tryDevice(devicePath, cancellable = this._cancellable) {
+    private async _tryDevice(
+        devicePath: string,
+        cancellable: Gio.Cancellable | null = this._cancellable
+    ): Promise<boolean> {
         if (this._deviceProxy || this._cancellable !== cancellable)
             return false;
 
@@ -240,17 +329,18 @@ export default class BatteryBoostExtension extends Extension {
 
             this._syncFromUPower();
             return true;
-        } catch (e) {
+        } catch (error) {
             if (this._cancellable !== cancellable ||
                 deviceSerial !== this._deviceSerial)
                 return false;
 
-            console.debug(`[BatteryBoost] Could not inspect ${devicePath}: ${e.message}`);
+            console.debug(
+                `[BatteryBoost] Could not inspect ${devicePath}: ${errorMessage(error)}`);
             return false;
         }
     }
 
-    _unwatchDevice() {
+    private _unwatchDevice(): void {
         this._deviceSerial++;
 
         if (this._deviceProxy && this._deviceChangedId)
@@ -266,23 +356,28 @@ export default class BatteryBoostExtension extends Extension {
         this._previousPercentage = null;
     }
 
-    _onDeviceChanged(changed) {
+    private _onDeviceChanged(changed: GLib.Variant): void {
+        const deviceProxy = this._deviceProxy;
+        if (!deviceProxy)
+            return;
+
         if (changed.lookup_value('IsPresent', null) &&
-            !this._deviceProxy.IsPresent) {
+            !deviceProxy.IsPresent) {
             this._unwatchDevice();
-            this._findBatteryDevice();
+            void this._findBatteryDevice();
             return;
         }
 
         const stateChanged = !!changed.lookup_value('State', null);
         const percentageChanged = !!changed.lookup_value('Percentage', null);
-        const state = this._deviceProxy.State;
-        const percentage = this._deviceProxy.Percentage;
+        const state = deviceProxy.State;
+        const percentage = deviceProxy.Percentage;
 
         const disconnected = stateChanged &&
             this._previousState !== DeviceState.DISCHARGING &&
             state === DeviceState.DISCHARGING;
         const fullyCharged = percentageChanged &&
+            this._previousPercentage !== null &&
             this._previousPercentage < 100.0 && percentage >= 100.0 &&
             (state === DeviceState.CHARGING ||
                 state === DeviceState.FULLY_CHARGED);
@@ -304,7 +399,7 @@ export default class BatteryBoostExtension extends Extension {
             this._settings.set_boolean(SETTINGS_KEY, false);
     }
 
-    _syncFromUPower() {
+    private _syncFromUPower(): void {
         if (!this._deviceProxy)
             return;
 
@@ -312,19 +407,23 @@ export default class BatteryBoostExtension extends Extension {
             !this._deviceProxy.ChargeThresholdEnabled);
     }
 
-    async _onModeChanged() {
+    private async _onModeChanged(): Promise<void> {
         const settings = this._settings;
+        if (!settings)
+            return;
+
         const boostEnabled = settings.get_boolean(SETTINGS_KEY);
         const operationSerial = ++this._operationSerial;
 
         try {
             await this._setThresholdEnabled(!boostEnabled);
-        } catch (e) {
+        } catch (error) {
             if (this._settings !== settings ||
                 operationSerial !== this._operationSerial)
                 return;
 
-            console.error(`[BatteryBoost] Failed to set threshold: ${e.message}`);
+            console.error(
+                `[BatteryBoost] Failed to set threshold: ${errorMessage(error)}`);
             this._notify(_('Failed to change battery charge limit'));
             this._setBoostEnabledWithoutApplying(!boostEnabled);
             return;
@@ -339,7 +438,7 @@ export default class BatteryBoostExtension extends Extension {
             : _('Battery boost ended — configured limit restored'));
     }
 
-    _setBoostEnabledWithoutApplying(enabled) {
+    private _setBoostEnabledWithoutApplying(enabled: boolean): void {
         if (!this._settings ||
             this._settings.get_boolean(SETTINGS_KEY) === enabled)
             return;
@@ -358,7 +457,7 @@ export default class BatteryBoostExtension extends Extension {
         }
     }
 
-    _setThresholdEnabled(enabled) {
+    private _setThresholdEnabled(enabled: boolean): Promise<void> {
         const proxy = this._deviceProxy;
 
         if (!proxy)
@@ -368,7 +467,7 @@ export default class BatteryBoostExtension extends Extension {
                 _('Battery charge thresholds are not supported')));
         }
 
-        return new Promise((resolve, reject) => {
+        return new Promise<void>((resolve, reject) => {
             try {
                 proxy.EnableChargeThresholdRemote(enabled, (_result, error) => {
                     if (error)
@@ -376,13 +475,13 @@ export default class BatteryBoostExtension extends Extension {
                     else
                         resolve();
                 });
-            } catch (e) {
-                reject(e);
+            } catch (error) {
+                reject(error);
             }
         });
     }
 
-    _notify(message) {
+    private _notify(message: string): void {
         Main.notify(_('Battery Boost'), message);
     }
 }

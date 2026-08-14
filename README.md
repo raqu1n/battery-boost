@@ -9,6 +9,7 @@ When 100% boost is active, the extension automatically restores the configured c
 - GNOME Shell 50
 - A laptop whose battery charge thresholds are supported by UPower
 - UPower running with permission to change charge thresholds
+- Node.js and npm when building from source
 
 Verify UPower support with:
 
@@ -32,9 +33,10 @@ Then restart GNOME Shell:
 
 ### From source
 
-Build the extension first:
+Install the development dependencies and build the extension:
 
 ```bash
+npm ci
 ./scripts/build.sh
 ```
 
@@ -50,15 +52,18 @@ Then restart GNOME Shell as described above.
 ## Building the zip
 
 ```bash
+npm ci
 ./scripts/build.sh
 ```
 
-This produces `dist/battery-boost@maltehegel.github.io.shell-extension.zip`.
+The build compiles `src/extension.ts` to readable JavaScript, validates the
+GSettings schema, and produces
+`dist/battery-boost@maltehegel.github.io.shell-extension.zip`.
 
-You can also build manually (the script additionally validates the schema):
+For a strict type check without emitting JavaScript:
 
 ```bash
-gnome-extensions pack --extra-source=schemas --out-dir=dist src
+npm run typecheck
 ```
 
 ## Usage
@@ -77,7 +82,8 @@ Watch logs:
 journalctl -f -o cat /usr/bin/gnome-shell
 ```
 
-The extension source lives in `src/`.
+The TypeScript extension source lives in `src/`. Generated JavaScript is placed
+in `build/` and is not committed.
 
 ## License
 
