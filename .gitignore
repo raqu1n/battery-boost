@@ -1,5 +1,6 @@
 # Build artifacts
 build/
+coverage/
 dist/
 node_modules/
 *.shell-extension.zip
