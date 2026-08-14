@@ -1,0 +1,20 @@
+# Build artifacts
+build/
+dist/
+node_modules/
+*.shell-extension.zip
+src/schemas/gschemas.compiled
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
