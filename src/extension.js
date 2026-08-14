@@ -84,7 +84,9 @@ export default class BatteryBoostExtension extends Extension {
         this._settingsChangedId = this._settings.connect(
             `changed::${SETTINGS_KEY}`, () => this._onModeChanged());
 
+        this._cancellable = new Gio.Cancellable();
         this._operationSerial = 0;
+        this._deviceSerial = 0;
         this._upowerProxy = null;
         this._deviceProxy = null;
         this._devicePath = null;
@@ -98,7 +100,13 @@ export default class BatteryBoostExtension extends Extension {
     }
 
     disable() {
+        const cancellable = this._cancellable;
+        this._cancellable = null;
+        if (cancellable)
+            cancellable.cancel();
+
         this._operationSerial++;
+        this._deviceSerial++;
 
         if (this._settingsChangedId) {
             this._settings.disconnect(this._settingsChangedId);
@@ -116,30 +124,45 @@ export default class BatteryBoostExtension extends Extension {
         this._settings = null;
     }
 
-    _setupUPower() {
+    async _setupUPower() {
+        const cancellable = this._cancellable;
+
         try {
-            this._upowerProxy = new UPowerProxy(
+            const proxy = await UPowerProxy.newAsync(
                 Gio.DBus.system,
                 UPOWER_BUS_NAME,
-                UPOWER_OBJECT_PATH
+                UPOWER_OBJECT_PATH,
+                cancellable
             );
 
-            this._deviceAddedId = this._upowerProxy.connectSignal(
+            if (this._cancellable !== cancellable)
+                return;
+
+            this._upowerProxy = proxy;
+            this._deviceAddedId = proxy.connectSignal(
                 'DeviceAdded', (_proxy, _sender, [devicePath]) => {
                     if (!this._deviceProxy)
-                        this._tryDevice(devicePath);
+                        this._tryDevice(devicePath, cancellable);
                 });
-            this._deviceRemovedId = this._upowerProxy.connectSignal(
+            this._deviceRemovedId = proxy.connectSignal(
                 'DeviceRemoved', (_proxy, _sender, [devicePath]) => {
-                    if (devicePath !== this._devicePath)
-                        return;
+                    if (devicePath === this._devicePath) {
+                        this._unwatchDevice();
+                    } else if (!this._deviceProxy) {
+                        // Invalidate a proxy that may still be initializing for
+                        // the removed path.
+                        this._deviceSerial++;
+                    }
 
-                    this._unwatchDevice();
-                    this._findBatteryDevice();
+                    if (!this._deviceProxy)
+                        this._findBatteryDevice(cancellable);
                 });
 
-            this._findBatteryDevice();
+            await this._findBatteryDevice(cancellable);
         } catch (e) {
+            if (this._cancellable !== cancellable)
+                return;
+
             console.error(`[BatteryBoost] Failed to connect to UPower: ${e.message}`);
         }
     }
@@ -157,31 +180,50 @@ export default class BatteryBoostExtension extends Extension {
         this._upowerProxy = null;
     }
 
-    _findBatteryDevice() {
-        if (!this._upowerProxy || this._deviceProxy)
+    async _findBatteryDevice(cancellable = this._cancellable) {
+        const upowerProxy = this._upowerProxy;
+        if (!upowerProxy || this._deviceProxy ||
+            this._cancellable !== cancellable)
             return;
 
         try {
-            const [devicePaths] = this._upowerProxy.EnumerateDevicesSync();
+            const [devicePaths] = await upowerProxy.EnumerateDevicesAsync(
+                cancellable);
+
+            if (this._upowerProxy !== upowerProxy ||
+                this._cancellable !== cancellable || this._deviceProxy)
+                return;
+
             for (const devicePath of devicePaths) {
-                if (this._tryDevice(devicePath))
+                if (await this._tryDevice(devicePath, cancellable))
                     break;
             }
         } catch (e) {
+            if (this._upowerProxy !== upowerProxy ||
+                this._cancellable !== cancellable)
+                return;
+
             console.error(`[BatteryBoost] EnumerateDevices failed: ${e.message}`);
         }
     }
 
-    _tryDevice(devicePath) {
-        if (this._deviceProxy)
+    async _tryDevice(devicePath, cancellable = this._cancellable) {
+        if (this._deviceProxy || this._cancellable !== cancellable)
             return false;
 
+        const deviceSerial = this._deviceSerial;
+
         try {
-            const proxy = new UPowerDeviceProxy(
+            const proxy = await UPowerDeviceProxy.newAsync(
                 Gio.DBus.system,
                 UPOWER_BUS_NAME,
-                devicePath
+                devicePath,
+                cancellable
             );
+
+            if (this._cancellable !== cancellable ||
+                deviceSerial !== this._deviceSerial || this._deviceProxy)
+                return false;
 
             if (proxy.Type !== BATTERY_DEVICE_TYPE ||
                 !proxy.PowerSupply || !proxy.IsPresent)
@@ -199,12 +241,18 @@ export default class BatteryBoostExtension extends Extension {
             this._syncFromUPower();
             return true;
         } catch (e) {
+            if (this._cancellable !== cancellable ||
+                deviceSerial !== this._deviceSerial)
+                return false;
+
             console.debug(`[BatteryBoost] Could not inspect ${devicePath}: ${e.message}`);
             return false;
         }
     }
 
     _unwatchDevice() {
+        this._deviceSerial++;
+
         if (this._deviceProxy && this._deviceChangedId)
             this._deviceProxy.disconnect(this._deviceChangedId);
 
