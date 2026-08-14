@@ -4,17 +4,17 @@ This file documents the project for AI coding agents. It is based on the actual 
 
 ## Project overview
 
-Battery Boost is a GNOME Shell extension that adds a Quick Settings toggle to switch a laptop's battery charge limit between 80% ("healthy") and 100% ("maximum"). It targets GNOME Shell 45 and later, uses modern ES modules, and communicates with the system's UPower service over D-Bus.
+Battery Boost is a GNOME Shell extension that adds a Quick Settings toggle to temporarily disable a laptop's configured charge limit and charge to 100%. It targets GNOME Shell 50, uses modern ES modules, and communicates with the system's UPower service over D-Bus.
 
 Key facts:
 
-- **Extension UUID:** `battery-health-toggle@batteryhealth-widget`
-- **Language:** JavaScript (GNOME Shell / GJS), CSS
-- **Settings schema:** `org.gnome.shell.extensions.battery-health-toggle`
-- **Minimum GNOME Shell version:** 45
+- **Extension UUID:** `battery-boost@maltehegel.github.io`
+- **Language:** JavaScript (GNOME Shell / GJS)
+- **Settings schema:** `org.gnome.shell.extensions.battery-boost`
+- **GNOME Shell version:** 50
 - **License:** MIT
 - **Repository root:** `/home/malte/repos/batteryhealth-widget`
-- **Extension source directory:** `battery-health-toggle@batteryhealth-widget/`
+- **Extension source directory:** `src/`
 
 ## Files and code organization
 
@@ -24,15 +24,12 @@ battery-health-widget/
 ├── README.md                                    # Project-level overview and install instructions
 ├── .gitignore                                   # Ignore build artifacts, editors, OS files
 ├── scripts/
-│   └── build.sh                                 # Build script: compile schema and pack zip
+│   └── build.sh                                 # Build script: validate schema and pack zip
 ├── src/                                         # Extension source
 │   ├── extension.js                             # Main extension logic
 │   ├── metadata.json                            # Extension manifest
-│   ├── stylesheet.css                           # Extension-specific styles
-│   ├── README.md                                # User-facing documentation
 │   └── schemas/
-│       └── org.gnome.shell.extensions.battery-health-toggle.gschema.xml
-├── build/                                       # Temporary build directory (ignored by git)
+│       └── org.gnome.shell.extensions.battery-boost.gschema.xml
 └── dist/                                        # Packaged distributable (ignored by git)
 ```
 
@@ -42,23 +39,24 @@ Single-file extension. Exports a default class `BatteryBoostExtension` extending
 
 Main parts:
 
-- **D-Bus proxies:** `UPowerProxy` and `UPowerDeviceProxy` wrap the `org.freedesktop.UPower` and `org.freedesktop.UPower.Device` interfaces.
-- **UI:** `BatteryToggle` extends `QuickToggle`; a `SystemIndicator` hosts it in GNOME's Quick Settings menu.
+- **D-Bus proxies:** `UPowerProxy` and `UPowerDeviceProxy` wrap the `org.freedesktop.UPower` and `org.freedesktop.UPower.Device` interfaces. Proxy construction and device enumeration are asynchronous so UPower discovery does not block GNOME Shell's main thread.
+- **UI:** `BatteryToggle` extends `QuickToggle` and binds its checked state bidirectionally to GSettings; `BatteryIndicator` hosts it in GNOME's Quick Settings menu.
 - **Lifecycle:** `enable()` sets up the indicator, D-Bus proxy, and settings listener; `disable()` tears everything down.
-- **State:** Settings key `boost-enabled` is a boolean. `false` means the healthy 80% charge limit is active; `true` means the one-cycle 100% boost is active.
-- **UI sync:** `BatteryToggle` listens to `changed::boost-enabled` and assigns `this.checked` manually. It also handles the `clicked` signal to update the setting.
+- **State:** Settings key `boost-enabled` is a boolean. `false` means the configured charge limit is active; `true` means the one-cycle 100% boost is active.
+- **UI sync:** `BatteryToggle` uses a bidirectional `Gio.Settings.bind()` binding for `boost-enabled` and `checked`.
 - **Auto-revert:** When boost is active, the extension reverts to `false` automatically on a **transition** to AC disconnected (battery state changes into discharging) or on a transition to 100% charge. It does not revert merely because the current state is discharging or already at 100%.
-- **Interactivity:** `BatteryToggle` forces `sensitive`, `reactive`, and `can_focus` to `true` and guards them with `notify` handlers so the shell cannot make the toggle unclickable.
+- **Hotplug:** The extension watches UPower `DeviceAdded` and `DeviceRemoved` signals and safely switches battery proxies.
+- **Async safety:** UPower discovery uses a lifecycle cancellable and device serial guard. Each threshold operation has a serial guard so callbacks from removed devices, earlier clicks, or a disabled extension cannot overwrite newer state.
 
 ### `metadata.json`
 
 Standard GNOME Shell extension manifest:
 
-- `uuid`, `name`, `description`, `version`
-- `shell-version`: supported GNOME Shell releases (`45` through `50`)
+- `uuid`, `name`, `description`, `url`
+- `shell-version`: supported GNOME Shell release (`50`)
 - `settings-schema`: links the extension to its GSettings schema
 
-### `schemas/org.gnome.shell.extensions.battery-health-toggle.gschema.xml`
+### `schemas/org.gnome.shell.extensions.battery-boost.gschema.xml`
 
 Defines one key:
 
@@ -68,11 +66,7 @@ Defines one key:
 </key>
 ```
 
-After editing the XML, recompile the schema with `glib-compile-schemas schemas/`.
-
-### `stylesheet.css`
-
-Placeholder stylesheet. Currently contains no rules. Add custom styling here if needed.
+After editing the XML, validate it by running `./scripts/build.sh`.
 
 ## Technology stack
 
@@ -85,14 +79,14 @@ Placeholder stylesheet. Currently contains no rules. Add custom styling here if 
 
 ## Build process
 
-The extension ships as JavaScript source. The build script copies the source into a UUID-named directory, compiles the GSettings schema, and packs the zip.
+The extension ships as JavaScript source. The build script validates the GSettings schema and packages the source directly.
 
 ### Local install
 
 ```bash
 ./scripts/build.sh
-gnome-extensions install dist/battery-health-toggle@batteryhealth-widget.shell-extension.zip
-gnome-extensions enable battery-health-toggle@batteryhealth-widget
+gnome-extensions install dist/battery-boost@maltehegel.github.io.shell-extension.zip
+gnome-extensions enable battery-boost@maltehegel.github.io
 ```
 
 Restart GNOME Shell after installing:
@@ -106,9 +100,9 @@ Restart GNOME Shell after installing:
 ./scripts/build.sh
 ```
 
-This produces `dist/battery-health-toggle@batteryhealth-widget.shell-extension.zip`.
+This produces `dist/battery-boost@maltehegel.github.io.shell-extension.zip`.
 
-You can also build manually with `gnome-extensions pack src/` if you prefer not to use the script.
+You can also build manually with `gnome-extensions pack --extra-source=schemas src/` if you prefer not to use the script.
 
 ## Testing instructions
 
@@ -119,7 +113,7 @@ The project has no automated test suite. Validation is manual:
 3. Open the system menu and verify the "Battery Boost" toggle appears.
 4. Click the toggle and confirm the setting changes via GSettings:
    ```bash
-   gsettings get org.gnome.shell.extensions.battery-health-toggle boost-enabled
+   gsettings get org.gnome.shell.extensions.battery-boost boost-enabled
    ```
 5. Verify the underlying UPower state:
    ```bash
@@ -154,6 +148,6 @@ Only hardware and UPower versions that expose `ChargeThresholdSupported` and `En
 
 - There is no `package.json`, `Cargo.toml`, `pyproject.toml`, or similar manifest. The source of truth is `metadata.json` plus the GSettings schema.
 - The repository has no CI configuration yet.
-- Source files live in `src/`; do not edit files inside `build/` because they are regenerated.
+- Source files live in `src/`.
 - Regenerate the distributable zip with `./scripts/build.sh` after any source change.
-- `build/` and `dist/` are ignored by git; they are created on demand by the build script.
+- `dist/` is ignored by git and created on demand by the build script.

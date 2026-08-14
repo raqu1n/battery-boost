@@ -1,5 +1,4 @@
 # Build artifacts
-build/
 dist/
 *.shell-extension.zip
 src/schemas/gschemas.compiled

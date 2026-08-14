@@ -1,7 +1,7 @@
 {
   "uuid": "battery-boost@maltehegel.github.io",
   "name": "Battery Boost",
-  "description": "Quick Settings toggle to boost battery charging to 100% for one cycle. Automatically reverts to the healthy 80% limit when AC is unplugged or the battery reaches 100%.",
+  "description": "Quick Settings toggle to boost battery charging to 100% for one cycle. Automatically restores the configured charge limit when AC is unplugged or the battery reaches 100%.",
   "shell-version": ["50"],
   "url": "https://github.com/maltehegel/battery-boost",
   "settings-schema": "org.gnome.shell.extensions.battery-boost"
