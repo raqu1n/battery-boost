@@ -26,6 +26,8 @@ battery-health-widget/
 ├── package.json                                 # TypeScript scripts and development dependencies
 ├── package-lock.json                            # Locked development dependency versions
 ├── tsconfig.json                                # Strict TypeScript compiler configuration
+├── tsconfig.test.json                           # Type-checking for tests and test configuration
+├── vitest.config.ts                             # Unit test aliases, coverage, and thresholds
 ├── ambient.d.ts                                 # GJS and GNOME Shell ambient type imports
 ├── scripts/
 │   └── build.sh                                 # Compile, validate schema, and pack zip
@@ -39,7 +41,14 @@ battery-health-widget/
 │   └── upower/
 │       ├── batteryService.ts                    # Discovery, monitoring, and thresholds
 │       └── proxies.ts                           # Typed D-Bus proxy construction
+├── tests/                                       # Vitest unit tests and GNOME/GJS fakes
+│   ├── helpers/                                 # Reusable UPower test doubles
+│   ├── mocks/                                   # Aliased gi:// and resource:/// modules
+│   ├── ui/                                      # Quick Settings UI tests
+│   ├── upower/                                  # Proxy and battery service tests
+│   └── extension.test.ts                        # Extension coordinator tests
 ├── build/                                       # Generated staging directory (ignored by git)
+├── coverage/                                    # Generated coverage reports (ignored by git)
 └── dist/                                        # Packaged distributable (ignored by git)
 ```
 
@@ -92,6 +101,8 @@ After editing the XML, validate it by running `./scripts/build.sh`.
 - **Configuration:** GSettings via XML schema
 - **Type definitions:** `@girs/gjs` and `@girs/gnome-shell`
 - **Build:** TypeScript compiler (`tsc`)
+- **Tests:** Vitest with Node-based GNOME/GJS boundary mocks
+- **Coverage:** Vitest V8 provider with enforced project thresholds
 - **Packaging:** `gnome-extensions pack`
 
 ## Build process
@@ -125,27 +136,32 @@ Run `npm run typecheck` for a strict type check without emitting JavaScript.
 
 ## Testing instructions
 
-The project has no runtime test suite. Start validation with the static check, then test manually:
+The project has a unit suite for logic and lifecycle behavior. Run automated validation first, then test the generated extension manually:
 
-1. Type-check the extension: `npm run typecheck`.
-2. Build the extension: `./scripts/build.sh`.
-3. Install the produced zip and enable it.
-4. Open the system menu and verify the "Battery Boost" toggle appears.
-5. Click the toggle and confirm the setting changes via GSettings:
+1. Install locked development dependencies: `npm ci`.
+2. Type-check source and tests: `npm run typecheck`.
+3. Run all unit tests: `npm test`.
+4. Optionally enforce and inspect coverage: `npm run test:coverage`.
+5. Build the extension: `./scripts/build.sh`.
+6. Install the produced zip and enable it.
+7. Open the system menu and verify the "Battery Boost" toggle appears.
+8. Click the toggle and confirm the setting changes via GSettings:
    ```bash
    gsettings get org.gnome.shell.extensions.battery-boost boost-enabled
    ```
-6. Verify the underlying UPower state:
+9. Verify the underlying UPower state:
    ```bash
    upower -i /org/freedesktop/UPower/devices/battery_BAT0 | grep charge-threshold
    ```
-7. If supported, confirm that maximum mode reverts to healthy after unplugging AC or reaching 100%.
-8. Watch logs during testing:
+10. If supported, confirm that maximum mode reverts to healthy after unplugging AC or reaching 100%.
+11. Watch logs during testing:
    ```bash
    journalctl -f -o cat /usr/bin/gnome-shell
    ```
 
 Only hardware and UPower versions that expose `ChargeThresholdSupported` and `EnableChargeThreshold` can exercise the core feature.
+
+The unit tests alias `gi://` and `resource:///` imports to focused fakes. Tests should assert observable extension behavior and boundary interactions rather than duplicating GNOME Shell internals. Coverage thresholds are 90% statements, 80% branches, 100% functions, and 90% lines.
 
 ## Code style guidelines
 
@@ -172,5 +188,6 @@ Only hardware and UPower versions that expose `ChargeThresholdSupported` and `En
 - The repository has no CI configuration yet.
 - Source files live in `src/`.
 - Run `npm run typecheck` after TypeScript changes.
+- Run `npm test` after behavioral changes; use `npm run test:coverage` when adding new logic.
 - Regenerate the distributable zip with `./scripts/build.sh` after any source change.
-- `build/` and `dist/` are ignored by git and created on demand by the build script.
+- `build/`, `coverage/`, and `dist/` are ignored by git and created on demand.

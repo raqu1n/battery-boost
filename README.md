@@ -66,6 +66,15 @@ For a strict type check without emitting JavaScript:
 npm run typecheck
 ```
 
+Run the unit test suite or include a coverage report with:
+
+```bash
+npm test
+npm run test:coverage
+```
+
+`npm run check` runs both strict type-checking and the unit tests.
+
 ## Usage
 
 1. Open the system menu (top-right corner).
@@ -85,6 +94,10 @@ journalctl -f -o cat /usr/bin/gnome-shell
 The TypeScript extension source lives in `src/`, split into the extension
 coordinator, Quick Settings UI, and UPower service modules. Generated JavaScript
 is placed in `build/` and is not committed.
+
+Unit tests live in `tests/`. They run in Node.js with focused mocks for the
+GNOME Shell, GJS, GSettings, and D-Bus boundaries; hardware behavior still needs
+the manual checks described in `AGENTS.md`.
 
 ## License
 
