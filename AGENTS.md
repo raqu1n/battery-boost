@@ -30,28 +30,36 @@ battery-health-widget/
 ├── scripts/
 │   └── build.sh                                 # Compile, validate schema, and pack zip
 ├── src/                                         # Extension source
-│   ├── extension.ts                             # Main extension logic
+│   ├── extension.ts                             # Settings and lifecycle coordinator
 │   ├── metadata.json                            # Extension manifest
-│   └── schemas/
-│       └── org.gnome.shell.extensions.battery-boost.gschema.xml
+│   ├── schemas/
+│   │   └── org.gnome.shell.extensions.battery-boost.gschema.xml
+│   ├── ui/
+│   │   └── batteryIndicator.ts                  # Quick Toggle and System Indicator
+│   └── upower/
+│       ├── batteryService.ts                    # Discovery, monitoring, and thresholds
+│       └── proxies.ts                           # Typed D-Bus proxy construction
 ├── build/                                       # Generated staging directory (ignored by git)
 └── dist/                                        # Packaged distributable (ignored by git)
 ```
 
-### `extension.ts`
+### Runtime modules
 
-Single-file TypeScript extension. It is compiled to readable JavaScript and exports a default class `BatteryBoostExtension` extending `Extension` from `resource:///org/gnome/shell/extensions/extension.js`.
+- **`extension.ts`:** Exports `BatteryBoostExtension`, coordinates GSettings, UI, notifications, and the battery service, and owns GNOME Shell extension lifecycle.
+- **`ui/batteryIndicator.ts`:** Defines the `BatteryToggle` and `BatteryIndicator` GObject classes and exports a small indicator factory.
+- **`upower/proxies.ts`:** Contains UPower D-Bus XML, explicit interfaces for runtime-generated proxy members, and asynchronous proxy factories.
+- **`upower/batteryService.ts`:** Owns UPower discovery, battery hotplug handling, property monitoring, charge-cycle transitions, and threshold operations.
 
-Main parts:
+Behavior and ownership:
 
-- **D-Bus proxies:** `UPowerProxy` and `UPowerDeviceProxy` wrap the `org.freedesktop.UPower` and `org.freedesktop.UPower.Device` interfaces. Proxy construction and device enumeration are asynchronous so UPower discovery does not block GNOME Shell's main thread.
+- **D-Bus:** `UPowerProxy` and `UPowerDeviceProxy` wrap the `org.freedesktop.UPower` and `org.freedesktop.UPower.Device` interfaces. Proxy construction and device enumeration are asynchronous so UPower discovery does not block GNOME Shell's main thread.
 - **UI:** `BatteryToggle` extends `QuickToggle` and binds its checked state bidirectionally to GSettings; `BatteryIndicator` hosts it in GNOME's Quick Settings menu.
-- **Lifecycle:** `enable()` sets up the indicator, D-Bus proxy, and settings listener; `disable()` tears everything down.
+- **Lifecycle:** `BatteryBoostExtension.enable()` creates the service and indicator; `disable()` stops the service, disconnects settings, and destroys the indicator.
 - **State:** Settings key `boost-enabled` is a boolean. `false` means the configured charge limit is active; `true` means the one-cycle 100% boost is active.
 - **UI sync:** `BatteryToggle` uses a bidirectional `Gio.Settings.bind()` binding for `boost-enabled` and `checked`.
 - **Auto-revert:** When boost is active, the extension reverts to `false` automatically on a **transition** to AC disconnected (battery state changes into discharging) or on a transition to 100% charge. It does not revert merely because the current state is discharging or already at 100%.
 - **Hotplug:** The extension watches UPower `DeviceAdded` and `DeviceRemoved` signals and safely switches battery proxies.
-- **Async safety:** UPower discovery uses a lifecycle cancellable and device serial guard. Each threshold operation has a serial guard so callbacks from removed devices, earlier clicks, or a disabled extension cannot overwrite newer state.
+- **Async safety:** `BatteryService` uses a lifecycle cancellable plus device and operation serial guards. The extension has its own settings-operation guard, so callbacks from removed devices, earlier clicks, or a disabled extension cannot overwrite newer state.
 - **Types:** GJS and GNOME Shell declarations come from `@girs`. The members generated dynamically by `Gio.DBusProxy.makeProxyWrapper()` are described by local `UPowerProxy` and `UPowerDeviceProxy` interfaces.
 
 ### `metadata.json`
