@@ -12,7 +12,6 @@ Key facts:
 - **Language:** TypeScript compiled to JavaScript (GNOME Shell / GJS)
 - **Settings schema:** `org.gnome.shell.extensions.battery-boost`
 - **GNOME Shell version:** 50
-- **License:** MIT
 - **Repository root:** `/home/malte/repos/batteryhealth-widget`
 - **Extension source directory:** `src/`
 
@@ -22,8 +21,6 @@ Key facts:
 batteryhealth-widget/
 ├── AGENTS.md                                    # This file
 ├── README.md                                    # Project-level overview and install instructions
-├── LICENSE                                      # MIT license text
-├── findings.md                                  # Deferred code-review findings
 ├── .gitignore                                   # Ignore build artifacts, editors, OS files
 ├── .github/workflows/ci.yml                     # Automated checks on pushes and pull requests
 ├── package.json                                 # TypeScript scripts and development dependencies
@@ -75,9 +72,10 @@ Behavior and ownership:
 - **State:** Settings key `boost-enabled` is a supported external control and inspection API. It is a boolean: `false` means the configured charge limit is active; `true` means the one-cycle 100% boost is active. External writes must continue to follow the same apply, rollback, notification, and auto-revert path as Quick Toggle changes.
 - **UI sync:** `BatteryToggle` uses a bidirectional `Gio.Settings.bind()` binding for `boost-enabled` and `checked`.
 - **Auto-revert:** When boost is active, the extension reverts to `false` automatically on a **transition** to AC disconnected (battery state changes into discharging) or on a transition to 100% charge. It does not revert merely because the current state is discharging or already at 100%.
-- **Hotplug:** The extension watches UPower `DeviceAdded` and `DeviceRemoved` signals and safely switches battery proxies.
-- **Async safety:** `BatteryService` uses one lifecycle cancellable, serialized discovery, a device-generation guard, and a serialized last-request-wins threshold queue. The extension has a settings-operation guard, so callbacks from removed devices, earlier clicks, or a disabled extension cannot overwrite newer state.
-- **Recovery:** The service follows UPower name-owner changes and retries transient setup, enumeration, or inspection failures. It polls only while a known system battery is absent; normal hotplug handling remains signal-driven.
+- **Battery selection:** Discovery may inspect multiple system batteries, but the service monitors one present, threshold-capable battery at a time. An unsupported battery is retained only as a fallback for reporting `threshold-unsupported`; threshold writes are not broadcast to every battery.
+- **Hotplug:** The extension watches UPower `DeviceAdded` and `DeviceRemoved` signals and rediscoveries a replacement when the selected battery becomes unavailable.
+- **Async safety:** `BatteryService` uses one lifecycle cancellable, serialized discovery, a device-generation guard, and a serialized last-request-wins threshold queue. The extension has a settings-operation guard, so stale callbacks and completed results cannot overwrite newer settings or selected-device state. The generated threshold method itself is not passed the lifecycle cancellable, so stopping invalidates its result but does not guarantee cancellation of an already-running hardware call.
+- **Recovery:** The service follows UPower name-owner changes and retries transient setup, enumeration, and inspection failures. It also polls while a known system battery is absent; normal hotplug handling remains signal-driven.
 - **Types:** GJS and GNOME Shell declarations come from `@girs`. The members generated dynamically by `Gio.DBusProxy.makeProxyWrapper()` are described by local `UPowerProxy` and `UPowerDeviceProxy` interfaces.
 
 ### `metadata.json`
@@ -162,9 +160,10 @@ The project has a unit suite for logic and lifecycle behavior. Run automated val
    ```bash
    gsettings get org.gnome.shell.extensions.battery-boost boost-enabled
    ```
-9. Verify the underlying UPower state:
+9. Discover a battery path and verify the underlying UPower state:
    ```bash
-   upower -i /org/freedesktop/UPower/devices/battery_BAT0 | grep charge-threshold
+   BATTERY_PATH="$(upower -e | grep '/battery_' | head -n1)"
+   upower -i "${BATTERY_PATH}" | grep charge-threshold
    ```
 10. If supported, confirm that maximum mode reverts to healthy after unplugging AC or reaching 100%.
 11. Watch logs during testing:
@@ -200,7 +199,6 @@ The unit tests alias `gi://` and `resource:///` imports to focused fakes. Tests 
 - `package.json` describes development tooling only. The extension manifest remains `src/metadata.json` and the GSettings schema remains the settings source of truth.
 - GitHub Actions runs `npm ci` and `npm run check` on pushes and pull requests.
 - Source files live in `src/`.
-- Audit results, retained design choices, and open product decisions are documented in `findings.md`.
 - Run `npm run typecheck` after TypeScript changes.
 - Run `npm test` after behavioral changes; use `npm run test:coverage` when adding new logic.
 - Run `npm run test:upower` on a GNOME/UPower host when changing D-Bus proxy behavior.

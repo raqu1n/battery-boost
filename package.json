@@ -4,7 +4,6 @@
   "description": "GNOME Shell extension for temporarily charging a battery to 100%",
   "type": "module",
   "private": true,
-  "license": "MIT",
   "engines": {
     "node": ">=22.12.0"
   },

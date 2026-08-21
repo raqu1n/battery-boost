@@ -118,7 +118,3 @@ is placed in `build/` and is not committed.
 Unit tests live in `tests/`. They run in Node.js with focused mocks for the
 GNOME Shell, GJS, GSettings, and D-Bus boundaries; hardware behavior still needs
 the manual checks described in `AGENTS.md`.
-
-## License
-
-MIT

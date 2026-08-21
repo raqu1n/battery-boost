@@ -45,7 +45,6 @@ fi
 mkdir -p "${BUILD_DIR}/schemas" "${DIST_DIR}"
 cp "${SRC_DIR}/metadata.json" "${BUILD_DIR}/metadata.json"
 cp "${SCHEMA_PATH}" "${BUILD_DIR}/schemas/"
-cp "${PROJECT_ROOT}/LICENSE" "${BUILD_DIR}/LICENSE"
 
 rm -f "${DIST_DIR}/${UUID}.shell-extension.zip"
 
