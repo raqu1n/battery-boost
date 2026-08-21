@@ -11,7 +11,7 @@ import {addExternalIndicator, notify} from './mocks/main.js';
 import {deferred} from './helpers/upowerFakes.js';
 
 interface ServiceCallbacks {
-    onThresholdChanged(thresholdEnabled: boolean): void;
+    onThresholdChanged(thresholdEnabled: boolean | null): void;
     onChargeCycleEnded(): void;
 }
 
@@ -22,7 +22,7 @@ const batteryServiceMock = vi.hoisted(() => {
         readonly stop = vi.fn();
         readonly setThresholdEnabled = vi.fn<
             (enabled: boolean) => Promise<boolean>
-        >();
+        >().mockResolvedValue(true);
 
         constructor(callbacks: ServiceCallbacks) {
             this.callbacks = callbacks;
@@ -53,13 +53,13 @@ import BatteryBoostExtension from '../src/extension.js';
 class FakeSettings {
     value: boolean;
     readonly changedHandlerId = 41;
-    private _changedCallback: (() => unknown) | null = null;
+    private _changedCallback: (() => void) | null = null;
 
     constructor(initialValue: boolean) {
         this.value = initialValue;
     }
 
-    connect = vi.fn((signal: string, callback: () => unknown): number => {
+    connect = vi.fn((signal: string, callback: () => void): number => {
         expect(signal).toBe('changed::boost-enabled');
         this._changedCallback = callback;
         return this.changedHandlerId;
@@ -80,19 +80,23 @@ class FakeSettings {
             void this._changedCallback?.();
     });
 
-    emitChanged(): unknown {
+    emitChanged(): void {
         if (!this._changedCallback)
             throw new Error('Settings change handler is not connected');
 
         return this._changedCallback();
     }
 
-    captureChangedCallback(): () => unknown {
+    captureChangedCallback(): () => void {
         if (!this._changedCallback)
             throw new Error('Settings change handler is not connected');
 
         return this._changedCallback;
     }
+}
+
+async function waitForAsyncWork(): Promise<void> {
+    await new Promise(resolve => setImmediate(resolve));
 }
 
 interface FakeIndicator {
@@ -191,6 +195,18 @@ describe('BatteryBoostExtension lifecycle and synchronization', () => {
         expect(harness.settings.set_boolean).toHaveBeenCalledOnce();
     });
 
+    it('shows boost as off when no supported threshold state is available', () => {
+        const harness = enableExtension(true);
+
+        harness.service.callbacks.onThresholdChanged(null);
+
+        expect(harness.settings.set_boolean).toHaveBeenCalledWith(
+            'boost-enabled',
+            false
+        );
+        expect(harness.service.setThresholdEnabled).not.toHaveBeenCalled();
+    });
+
     it('always unblocks the settings handler when synchronization fails', () => {
         const consoleError = vi.spyOn(console, 'error').mockImplementation(
             () => {});
@@ -281,11 +297,13 @@ describe('BatteryBoostExtension mode changes', () => {
         const harness = enableExtension(boostEnabled);
         harness.service.setThresholdEnabled.mockResolvedValue(true);
 
-        await harness.settings.emitChanged();
+        harness.settings.emitChanged();
 
-        expect(harness.service.setThresholdEnabled).toHaveBeenCalledWith(
-            thresholdEnabled);
-        expect(notify).toHaveBeenCalledWith('Battery Boost', notification);
+        await vi.waitFor(() => {
+            expect(harness.service.setThresholdEnabled).toHaveBeenCalledWith(
+                thresholdEnabled);
+            expect(notify).toHaveBeenCalledWith('Battery Boost', notification);
+        });
     });
 
     it('rolls back the setting and reports a current operation failure', async () => {
@@ -295,18 +313,20 @@ describe('BatteryBoostExtension mode changes', () => {
         harness.service.setThresholdEnabled.mockRejectedValue(
             'permission denied');
 
-        await harness.settings.emitChanged();
+        harness.settings.emitChanged();
 
-        expect(consoleError).toHaveBeenCalledWith(
-            '[BatteryBoost] Failed to set threshold: permission denied');
-        expect(notify).toHaveBeenCalledWith(
-            'Battery Boost',
-            'Failed to change battery charge limit'
-        );
-        expect(harness.settings.set_boolean).toHaveBeenCalledWith(
-            'boost-enabled',
-            false
-        );
+        await vi.waitFor(() => {
+            expect(consoleError).toHaveBeenCalledWith(
+                '[BatteryBoost] Failed to set threshold: permission denied');
+            expect(notify).toHaveBeenCalledWith(
+                'Battery Boost',
+                'Failed to change battery charge limit'
+            );
+            expect(harness.settings.set_boolean).toHaveBeenCalledWith(
+                'boost-enabled',
+                false
+            );
+        });
         expect(signalHandlerBlock).toHaveBeenCalledWith(
             harness.settings,
             harness.settings.changedHandlerId
@@ -321,7 +341,8 @@ describe('BatteryBoostExtension mode changes', () => {
         const harness = enableExtension(true);
         harness.service.setThresholdEnabled.mockResolvedValue(false);
 
-        await harness.settings.emitChanged();
+        harness.settings.emitChanged();
+        await waitForAsyncWork();
 
         expect(notify).not.toHaveBeenCalled();
         expect(harness.settings.set_boolean).not.toHaveBeenCalled();
@@ -337,13 +358,21 @@ describe('BatteryBoostExtension mode changes', () => {
             .mockReturnValueOnce(earlier.promise)
             .mockReturnValueOnce(current.promise);
 
-        const earlierChange = harness.settings.emitChanged() as Promise<void>;
+        harness.settings.emitChanged();
+        await vi.waitFor(() => {
+            expect(harness.service.setThresholdEnabled).toHaveBeenCalledTimes(1);
+        });
         harness.settings.value = false;
-        const currentChange = harness.settings.emitChanged() as Promise<void>;
+        harness.settings.emitChanged();
+        await vi.waitFor(() => {
+            expect(harness.service.setThresholdEnabled).toHaveBeenCalledTimes(2);
+        });
         current.resolve(true);
-        await currentChange;
+        await vi.waitFor(() => {
+            expect(notify).toHaveBeenCalledOnce();
+        });
         earlier.reject(new Error('late failure'));
-        await earlierChange;
+        await waitForAsyncWork();
 
         expect(consoleError).not.toHaveBeenCalled();
         expect(harness.settings.set_boolean).not.toHaveBeenCalled();
@@ -360,11 +389,14 @@ describe('BatteryBoostExtension mode changes', () => {
         const harness = enableExtension(true);
         const pending = deferred<boolean>();
         harness.service.setThresholdEnabled.mockReturnValue(pending.promise);
-        const modeChange = harness.settings.emitChanged() as Promise<void>;
+        harness.settings.emitChanged();
+        await vi.waitFor(() => {
+            expect(harness.service.setThresholdEnabled).toHaveBeenCalledOnce();
+        });
 
         harness.extension.disable();
         pending.reject(new Error('cancelled'));
-        await modeChange;
+        await waitForAsyncWork();
 
         expect(consoleError).not.toHaveBeenCalled();
         expect(notify).not.toHaveBeenCalled();
@@ -376,13 +408,56 @@ describe('BatteryBoostExtension mode changes', () => {
         const harness = enableExtension(true);
         const pending = deferred<boolean>();
         harness.service.setThresholdEnabled.mockReturnValue(pending.promise);
-        const modeChange = harness.settings.emitChanged() as Promise<void>;
+        harness.settings.emitChanged();
+        await vi.waitFor(() => {
+            expect(harness.service.setThresholdEnabled).toHaveBeenCalledOnce();
+        });
 
         harness.extension.disable();
         pending.resolve(true);
-        await modeChange;
+        await waitForAsyncWork();
 
         expect(notify).not.toHaveBeenCalled();
         expect(harness.settings.set_boolean).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        {code: 'no-battery', message: 'No battery found'},
+        {
+            code: 'threshold-unsupported',
+            message: 'Battery charge thresholds are not supported',
+        },
+    ])('reports a specific $code failure', async ({code, message}) => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        const harness = enableExtension(true);
+        harness.service.setThresholdEnabled.mockRejectedValue({code});
+
+        harness.settings.emitChanged();
+
+        await vi.waitFor(() => {
+            expect(notify).toHaveBeenCalledWith('Battery Boost', message);
+        });
+        expect(harness.settings.value).toBe(false);
+    });
+
+    it('contains notification failures after applying a mode change', async () => {
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(
+            () => {});
+        const harness = enableExtension(true);
+        harness.service.setThresholdEnabled.mockResolvedValue(true);
+        notify.mockImplementationOnce(() => {
+            throw new Error('notification service unavailable');
+        });
+
+        harness.settings.emitChanged();
+
+        await vi.waitFor(() => {
+            expect(consoleError).toHaveBeenCalledWith(
+                expect.stringContaining(
+                    '[BatteryBoost] Failed to show notification: Error: notification service unavailable'
+                )
+            );
+        });
+        expect(harness.settings.value).toBe(true);
     });
 });

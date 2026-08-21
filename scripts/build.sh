@@ -37,19 +37,17 @@ echo "Compiling TypeScript..."
 rm -rf "${BUILD_DIR}"
 npm --prefix "${PROJECT_ROOT}" run build
 
-for required_file in extension.js; do
-    if [[ ! -f "${BUILD_DIR}/${required_file}" ]]; then
-        echo "Build did not produce ${required_file}" >&2
-        exit 1
-    fi
-done
+if [[ ! -f "${BUILD_DIR}/extension.js" ]]; then
+    echo "Build did not produce extension.js" >&2
+    exit 1
+fi
 
 mkdir -p "${BUILD_DIR}/schemas" "${DIST_DIR}"
 cp "${SRC_DIR}/metadata.json" "${BUILD_DIR}/metadata.json"
 cp "${SCHEMA_PATH}" "${BUILD_DIR}/schemas/"
+cp "${PROJECT_ROOT}/LICENSE" "${BUILD_DIR}/LICENSE"
 
-find "${DIST_DIR}" -maxdepth 1 -type f \
-    -name '*.shell-extension.zip' -delete
+rm -f "${DIST_DIR}/${UUID}.shell-extension.zip"
 
 EXTRA_SOURCES=()
 while IFS= read -r source_file; do

@@ -1,5 +1,5 @@
 import Gio from 'gi://Gio';
-import type GLib from 'gi://GLib';
+import GLib from 'gi://GLib';
 
 import {
     BATTERY_DEVICE_TYPE,
@@ -10,6 +10,8 @@ import {
     type UPowerProxy,
 } from './proxies.js';
 import {logDebug, logError} from '../utils.js';
+
+const DISCOVERY_RETRY_SECONDS = 30;
 
 export type BatteryServiceErrorCode =
     | 'no-battery'
@@ -23,8 +25,18 @@ export class BatteryServiceError extends Error {
 }
 
 export interface BatteryServiceCallbacks {
-    onThresholdChanged(thresholdEnabled: boolean): void;
+    onThresholdChanged(thresholdEnabled: boolean | null): void;
     onChargeCycleEnded(): void;
+}
+
+interface DeviceCandidate {
+    path: string;
+    proxy: UPowerDeviceProxy;
+}
+
+interface DeviceInspection {
+    candidate: DeviceCandidate | null;
+    failed: boolean;
 }
 
 function isChargingState(state: number): boolean {
@@ -37,15 +49,21 @@ export class BatteryService {
     private readonly _callbacks: BatteryServiceCallbacks;
     private _cancellable: Gio.Cancellable | null = null;
     private _thresholdOperation = 0;
+    private _thresholdQueue: Promise<void> = Promise.resolve();
     private _deviceGeneration = 0;
     private _discoveryPromise: Promise<void> | null = null;
     private _discoveryQueued = false;
-    private readonly _pendingDevicePaths = new Set<string>();
+    private _retryId: number | null = null;
+    private _connectionFailureReported = false;
+    private _enumerationFailureReported = false;
+    private readonly _inspectionFailuresReported = new Set<string>();
     private _upowerProxy: UPowerProxy | null = null;
     private _deviceProxy: UPowerDeviceProxy | null = null;
     private _devicePath: string | null = null;
     private _previousState: number | null = null;
     private _previousPercentage: number | null = null;
+    private _fullChargePending = false;
+    private _nameOwnerChangedId: number | null = null;
     private _deviceAddedId: number | null = null;
     private _deviceRemovedId: number | null = null;
     private _deviceChangedId: number | null = null;
@@ -71,7 +89,10 @@ export class BatteryService {
         this._thresholdOperation++;
         this._discoveryPromise = null;
         this._discoveryQueued = false;
-        this._pendingDevicePaths.clear();
+        this._connectionFailureReported = false;
+        this._enumerationFailureReported = false;
+        this._inspectionFailuresReported.clear();
+        this._cancelRetry();
         this._unwatchDevice();
         this._unwatchUPower();
     }
@@ -88,23 +109,33 @@ export class BatteryService {
                 'threshold-unsupported'));
         }
 
-        return new Promise<boolean>((resolve, reject) => {
+        const request = this._thresholdQueue.then(async () => {
+            if (operation !== this._thresholdOperation ||
+                proxy !== this._deviceProxy ||
+                cancellable !== this._cancellable)
+                return false;
+
             try {
-                proxy.EnableChargeThresholdRemote(enabled, (_result, error) => {
-                    if (operation !== this._thresholdOperation ||
-                        proxy !== this._deviceProxy ||
-                        cancellable !== this._cancellable) {
-                        resolve(false);
-                    } else if (error) {
-                        reject(error);
-                    } else {
-                        resolve(true);
-                    }
-                });
+                await proxy.EnableChargeThresholdAsync(enabled);
             } catch (error) {
-                reject(error);
+                if (operation !== this._thresholdOperation ||
+                    proxy !== this._deviceProxy ||
+                    cancellable !== this._cancellable)
+                    return false;
+
+                throw error;
             }
+
+            return operation === this._thresholdOperation &&
+                proxy === this._deviceProxy &&
+                cancellable === this._cancellable;
         });
+
+        this._thresholdQueue = request.then(
+            () => undefined,
+            () => undefined
+        );
+        return request;
     }
 
     private _isActive(cancellable: Gio.Cancellable): boolean {
@@ -112,6 +143,9 @@ export class BatteryService {
     }
 
     private async _setupUPower(cancellable: Gio.Cancellable): Promise<void> {
+        if (!this._isActive(cancellable) || this._upowerProxy)
+            return;
+
         try {
             const proxy = await createUPowerProxy(cancellable);
 
@@ -119,20 +153,27 @@ export class BatteryService {
                 return;
 
             this._upowerProxy = proxy;
+            this._nameOwnerChangedId = proxy.connect(
+                'notify::g-name-owner', changedProxy => {
+                    this._onNameOwnerChanged(changedProxy, cancellable);
+                });
             this._deviceAddedId = proxy.connectSignal(
-                'DeviceAdded', (_proxy, _sender, [devicePath]) => {
-                    if (!this._deviceProxy)
-                        this._queueDiscovery(cancellable, devicePath);
+                'DeviceAdded', (_proxy, _sender, _parameters) => {
+                    if (this._deviceProxy?.ChargeThresholdSupported)
+                        return;
+
+                    if (this._deviceProxy)
+                        this._unwatchDevice();
+                    else
+                        this._deviceGeneration++;
+
+                    this._queueDiscovery(cancellable);
                 });
             this._deviceRemovedId = proxy.connectSignal(
                 'DeviceRemoved', (_proxy, _sender, [devicePath]) => {
-                    this._pendingDevicePaths.delete(devicePath);
-
                     if (devicePath === this._devicePath) {
                         this._unwatchDevice();
                     } else if (!this._deviceProxy) {
-                        // Invalidate a candidate that may still be initializing
-                        // for the removed path.
                         this._deviceGeneration++;
                     }
 
@@ -140,27 +181,62 @@ export class BatteryService {
                         this._queueDiscovery(cancellable);
                 });
 
-            this._queueDiscovery(cancellable);
+            this._connectionFailureReported = false;
+            this._cancelRetry();
+            if (proxy.g_name_owner !== null)
+                this._queueDiscovery(cancellable);
         } catch (error) {
             if (!this._isActive(cancellable))
                 return;
 
             this._unwatchUPower();
-            logError('Failed to connect to UPower', error);
+            if (!this._connectionFailureReported) {
+                logError('Failed to connect to UPower', error);
+                this._connectionFailureReported = true;
+            }
+            this._scheduleRetry(cancellable);
+        }
+    }
+
+    private _onNameOwnerChanged(
+        proxy: UPowerProxy,
+        cancellable: Gio.Cancellable
+    ): void {
+        if (proxy !== this._upowerProxy || !this._isActive(cancellable))
+            return;
+
+        this._deviceGeneration++;
+        this._cancelRetry();
+        this._unwatchDevice();
+
+        if (proxy.g_name_owner !== null) {
+            this._queueDiscovery(cancellable);
+        } else {
+            this._emitThresholdState();
         }
     }
 
     private _unwatchUPower(): void {
         const proxy = this._upowerProxy;
+        const nameOwnerChangedId = this._nameOwnerChangedId;
         const deviceAddedId = this._deviceAddedId;
         const deviceRemovedId = this._deviceRemovedId;
 
+        this._nameOwnerChangedId = null;
         this._deviceAddedId = null;
         this._deviceRemovedId = null;
         this._upowerProxy = null;
 
         if (!proxy)
             return;
+
+        if (nameOwnerChangedId !== null) {
+            try {
+                proxy.disconnect(nameOwnerChangedId);
+            } catch (error) {
+                logError('Failed to disconnect UPower owner signal', error);
+            }
+        }
 
         if (deviceAddedId !== null) {
             try {
@@ -179,15 +255,43 @@ export class BatteryService {
         }
     }
 
-    private _queueDiscovery(
-        cancellable: Gio.Cancellable,
-        devicePath?: string
-    ): void {
-        if (!this._isActive(cancellable) || this._deviceProxy)
+    private _scheduleRetry(cancellable: Gio.Cancellable): void {
+        if (this._retryId !== null || !this._isActive(cancellable))
             return;
 
-        if (devicePath)
-            this._pendingDevicePaths.add(devicePath);
+        this._retryId = GLib.timeout_add_seconds(
+            GLib.PRIORITY_DEFAULT,
+            DISCOVERY_RETRY_SECONDS,
+            () => {
+                this._retryId = null;
+                if (this._isActive(cancellable)) {
+                    if (this._upowerProxy) {
+                        if (this._deviceProxy)
+                            this._unwatchDevice();
+                        else
+                            this._deviceGeneration++;
+                        this._queueDiscovery(cancellable);
+                    } else {
+                        void this._setupUPower(cancellable);
+                    }
+                }
+
+                return GLib.SOURCE_REMOVE;
+            }
+        );
+    }
+
+    private _cancelRetry(): void {
+        if (this._retryId === null)
+            return;
+
+        GLib.Source.remove(this._retryId);
+        this._retryId = null;
+    }
+
+    private _queueDiscovery(cancellable: Gio.Cancellable): void {
+        if (!this._isActive(cancellable) || this._deviceProxy)
+            return;
 
         if (this._discoveryPromise) {
             this._discoveryQueued = true;
@@ -225,52 +329,92 @@ export class BatteryService {
             !this._isActive(cancellable))
             return;
 
+        const deviceGeneration = this._deviceGeneration;
+        let fallbackCandidate: DeviceCandidate | null = null;
+        let inspectionFailed = false;
+        let absentCandidateFound = false;
+
+        let devicePaths: string[];
         try {
-            const requestedDevicePaths = [...this._pendingDevicePaths];
-            this._pendingDevicePaths.clear();
-
-            for (const devicePath of requestedDevicePaths) {
-                if (await this._tryDevice(devicePath, cancellable))
-                    return;
-
-                if (this._upowerProxy !== upowerProxy ||
-                    !this._isActive(cancellable) || this._deviceProxy)
-                    return;
-            }
-
-            const [devicePaths] = await upowerProxy.EnumerateDevicesAsync(
-                cancellable);
-
-            if (this._upowerProxy !== upowerProxy ||
-                !this._isActive(cancellable) || this._deviceProxy)
-                return;
-
-            for (const devicePath of devicePaths) {
-                if (await this._tryDevice(devicePath, cancellable))
-                    return;
-
-                if (this._upowerProxy !== upowerProxy ||
-                    !this._isActive(cancellable) || this._deviceProxy)
-                    return;
-            }
+            [devicePaths] = await upowerProxy.EnumerateDevicesAsync(cancellable);
         } catch (error) {
-            if (this._upowerProxy !== upowerProxy ||
-                !this._isActive(cancellable))
+            if (!this._canContinueDiscovery(
+                upowerProxy, cancellable, deviceGeneration))
                 return;
 
-            logError('EnumerateDevices failed', error);
+            if (!this._enumerationFailureReported) {
+                logError('EnumerateDevices failed', error);
+                this._enumerationFailureReported = true;
+            }
+            this._emitThresholdState();
+            this._scheduleRetry(cancellable);
+            return;
         }
+
+        if (!this._canContinueDiscovery(
+            upowerProxy, cancellable, deviceGeneration))
+            return;
+
+        this._cancelRetry();
+        this._enumerationFailureReported = false;
+
+        for (const devicePath of devicePaths) {
+            const inspection = await this._inspectDevice(
+                devicePath, cancellable, deviceGeneration);
+            inspectionFailed ||= inspection.failed;
+
+            if (!this._canContinueDiscovery(
+                upowerProxy, cancellable, deviceGeneration))
+                return;
+
+            const candidate = inspection.candidate;
+            if (!candidate)
+                continue;
+            if (!candidate.proxy.IsPresent) {
+                absentCandidateFound = true;
+            } else if (candidate.proxy.ChargeThresholdSupported) {
+                if (this._watchDevice(
+                    candidate, cancellable, deviceGeneration)) {
+                    this._cancelRetry();
+                    return;
+                }
+                inspectionFailed = true;
+            } else {
+                fallbackCandidate ??= candidate;
+            }
+        }
+
+        if (fallbackCandidate) {
+            if (this._watchDevice(
+                fallbackCandidate, cancellable, deviceGeneration)) {
+                if (inspectionFailed)
+                    this._scheduleRetry(cancellable);
+                return;
+            }
+            inspectionFailed = true;
+        }
+
+        this._emitThresholdState();
+        if (inspectionFailed || absentCandidateFound)
+            this._scheduleRetry(cancellable);
     }
 
-    private async _tryDevice(
+    private _canContinueDiscovery(
+        upowerProxy: UPowerProxy,
+        cancellable: Gio.Cancellable,
+        deviceGeneration: number
+    ): boolean {
+        return this._upowerProxy === upowerProxy &&
+            this._isActive(cancellable) &&
+            this._deviceGeneration === deviceGeneration &&
+            !this._deviceProxy;
+    }
+
+    private async _inspectDevice(
         devicePath: string,
-        cancellable: Gio.Cancellable
-    ): Promise<boolean> {
-        if (this._deviceProxy || !this._isActive(cancellable))
-            return false;
-
-        const deviceGeneration = this._deviceGeneration;
-
+        cancellable: Gio.Cancellable,
+        deviceGeneration: number
+    ): Promise<DeviceInspection> {
         try {
             const proxy = await createUPowerDeviceProxy(
                 devicePath,
@@ -280,12 +424,38 @@ export class BatteryService {
             if (!this._isActive(cancellable) ||
                 deviceGeneration !== this._deviceGeneration ||
                 this._deviceProxy)
-                return false;
+                return {candidate: null, failed: false};
 
-            if (proxy.Type !== BATTERY_DEVICE_TYPE ||
-                !proxy.PowerSupply || !proxy.IsPresent)
-                return false;
+            if (proxy.Type !== BATTERY_DEVICE_TYPE || !proxy.PowerSupply)
+                return {candidate: null, failed: false};
 
+            return {
+                candidate: {path: devicePath, proxy},
+                failed: false,
+            };
+        } catch (error) {
+            if (!this._isActive(cancellable) ||
+                deviceGeneration !== this._deviceGeneration)
+                return {candidate: null, failed: false};
+
+            if (!this._inspectionFailuresReported.has(devicePath)) {
+                logDebug(`Could not inspect ${devicePath}`, error);
+                this._inspectionFailuresReported.add(devicePath);
+            }
+            return {candidate: null, failed: true};
+        }
+    }
+
+    private _watchDevice(
+        candidate: DeviceCandidate,
+        cancellable: Gio.Cancellable,
+        deviceGeneration: number
+    ): boolean {
+        const {path, proxy} = candidate;
+        if (!proxy.IsPresent)
+            return false;
+
+        try {
             const changedId = proxy.connect(
                 'g-properties-changed', (changedProxy, changed) => {
                     this._onDeviceChanged(changedProxy, changed);
@@ -293,25 +463,28 @@ export class BatteryService {
 
             if (!this._isActive(cancellable) ||
                 deviceGeneration !== this._deviceGeneration ||
-                this._deviceProxy) {
+                this._deviceProxy || !proxy.IsPresent) {
                 proxy.disconnect(changedId);
                 return false;
             }
 
             this._deviceProxy = proxy;
-            this._devicePath = devicePath;
+            this._devicePath = path;
             this._previousState = proxy.State;
             this._previousPercentage = proxy.Percentage;
+            this._fullChargePending = false;
             this._deviceChangedId = changedId;
 
+            this._inspectionFailuresReported.delete(path);
             this._emitThresholdState();
             return true;
         } catch (error) {
-            if (!this._isActive(cancellable) ||
-                deviceGeneration !== this._deviceGeneration)
-                return false;
-
-            logDebug(`Could not inspect ${devicePath}`, error);
+            if (this._isActive(cancellable) &&
+                deviceGeneration === this._deviceGeneration &&
+                !this._inspectionFailuresReported.has(path)) {
+                logDebug(`Could not monitor ${path}`, error);
+                this._inspectionFailuresReported.add(path);
+            }
             return false;
         }
     }
@@ -326,6 +499,7 @@ export class BatteryService {
         this._devicePath = null;
         this._previousState = null;
         this._previousPercentage = null;
+        this._fullChargePending = false;
 
         if (proxy)
             this._thresholdOperation++;
@@ -361,11 +535,16 @@ export class BatteryService {
 
         if (changed.lookup_value('IsPresent', null) &&
             !deviceProxy.IsPresent) {
-            this._unwatchDevice();
-            const cancellable = this._cancellable;
-            if (cancellable)
-                this._queueDiscovery(cancellable);
+            this._rediscoverDevice();
             return;
+        }
+
+        if (changed.lookup_value('ChargeThresholdSupported', null)) {
+            if (!deviceProxy.ChargeThresholdSupported) {
+                this._rediscoverDevice();
+                return;
+            }
+            this._emitThresholdState();
         }
 
         const stateChanged = !!changed.lookup_value('State', null);
@@ -378,15 +557,23 @@ export class BatteryService {
         const disconnected = stateChanged &&
             previousState !== DeviceState.DISCHARGING &&
             state === DeviceState.DISCHARGING;
-        const fullyCharged = previousPercentage !== null &&
-            previousPercentage < 100.0 && percentage >= 100.0 &&
-            ((percentageChanged && isChargingState(state)) ||
-                (stateChanged && state === DeviceState.FULLY_CHARGED));
+        const reachedFullPercentage = previousPercentage !== null &&
+            previousPercentage < 100.0 && percentage >= 100.0;
+        const fullyCharged =
+            (percentageChanged && reachedFullPercentage &&
+                isChargingState(state)) ||
+            (stateChanged && isChargingState(state) &&
+                (reachedFullPercentage || this._fullChargePending));
 
-        // Always advance the baseline so cycle events represent transitions.
+        if (percentageChanged && reachedFullPercentage && !fullyCharged)
+            this._fullChargePending = true;
+        if ((percentageChanged && percentage < 100.0) ||
+            disconnected || fullyCharged)
+            this._fullChargePending = false;
+
         if (stateChanged)
             this._previousState = state;
-        if (percentageChanged)
+        if (percentageChanged || reachedFullPercentage)
             this._previousPercentage = percentage;
 
         if (changed.lookup_value('ChargeThresholdEnabled', null))
@@ -401,14 +588,21 @@ export class BatteryService {
         }
     }
 
+    private _rediscoverDevice(): void {
+        this._unwatchDevice();
+        const cancellable = this._cancellable;
+        if (cancellable)
+            this._queueDiscovery(cancellable);
+    }
+
     private _emitThresholdState(): void {
         const deviceProxy = this._deviceProxy;
-        if (!deviceProxy)
-            return;
 
         try {
             this._callbacks.onThresholdChanged(
-                deviceProxy.ChargeThresholdEnabled);
+                deviceProxy?.ChargeThresholdSupported
+                    ? deviceProxy.ChargeThresholdEnabled
+                    : null);
         } catch (error) {
             logError('Failed to synchronize threshold state', error);
         }

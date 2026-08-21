@@ -48,18 +48,19 @@ describe('UPower proxy factories', () => {
     });
 
     it('creates a device proxy for the requested object path', async () => {
+        const cancellable = new Cancellable() as unknown as Gio.Cancellable;
         const expectedProxy = {kind: 'device-proxy'};
         proxyWrapperRecords[1].newAsync.mockResolvedValue(expectedProxy);
 
         await expect(createUPowerDeviceProxy(
             '/org/freedesktop/UPower/devices/battery_BAT1',
-            null
+            cancellable
         )).resolves.toBe(expectedProxy);
         expect(proxyWrapperRecords[1].newAsync).toHaveBeenCalledWith(
             DBUS_SYSTEM,
             'org.freedesktop.UPower',
             '/org/freedesktop/UPower/devices/battery_BAT1',
-            null
+            cancellable
         );
     });
 

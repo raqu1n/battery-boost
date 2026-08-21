@@ -9,7 +9,7 @@ When 100% boost is active, the extension automatically restores the configured c
 - GNOME Shell 50
 - A laptop whose battery charge thresholds are supported by UPower
 - UPower running with permission to change charge thresholds
-- Node.js and npm when building from source
+- Node.js 22.12 or newer and npm when building from source
 
 Verify UPower support with:
 
@@ -26,10 +26,7 @@ gnome-extensions install battery-boost@maltehegel.github.io.shell-extension.zip
 gnome-extensions enable battery-boost@maltehegel.github.io
 ```
 
-Then restart GNOME Shell:
-
-- **Wayland:** log out and log back in
-- **X11:** press `Alt+F2`, type `r`, press Enter
+Then log out and back in to restart GNOME Shell.
 
 ### From source
 
@@ -74,7 +71,7 @@ npm run test:coverage
 ```
 
 Run the complete local check, including shell-script syntax validation, strict
-type-checking, and coverage-enforced tests:
+schema validation, strict type-checking, and coverage-enforced tests:
 
 ```bash
 npm run check
@@ -94,6 +91,18 @@ npm run test:upower
    - you unplug the AC adapter, or
    - the battery reaches 100%.
 
+The boost can also be controlled and inspected through its supported GSettings
+interface:
+
+```bash
+gsettings set org.gnome.shell.extensions.battery-boost boost-enabled true
+gsettings get org.gnome.shell.extensions.battery-boost boost-enabled
+gsettings set org.gnome.shell.extensions.battery-boost boost-enabled false
+```
+
+External changes follow the same validation, rollback, notification, and
+auto-revert behavior as changes made with the Quick Settings toggle.
+
 ## Development
 
 Watch logs:
@@ -110,8 +119,8 @@ Unit tests live in `tests/`. They run in Node.js with focused mocks for the
 GNOME Shell, GJS, GSettings, and D-Bus boundaries; hardware behavior still needs
 the manual checks described in `AGENTS.md`.
 
-The deferred audit items are recorded in [`findings.md`](findings.md). They are
-intentionally not part of the current implementation change.
+The latest codebase audit and its design decisions are recorded in
+[`findings.md`](findings.md).
 
 ## License
 
