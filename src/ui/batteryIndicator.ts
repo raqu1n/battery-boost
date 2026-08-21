@@ -4,6 +4,8 @@ import GObject from 'gi://GObject';
 import {gettext as _} from 'resource:///org/gnome/shell/extensions/extension.js';
 import {QuickToggle, SystemIndicator} from 'resource:///org/gnome/shell/ui/quickSettings.js';
 
+import {SETTINGS_KEY} from '../settings.js';
+
 const BatteryToggle = GObject.registerClass(
 class BatteryToggle extends QuickToggle {
     _init(): void {
@@ -14,21 +16,17 @@ class BatteryToggle extends QuickToggle {
         });
     }
 
-    bindSettings(settings: Gio.Settings, settingsKey: string): void {
-        settings.bind(settingsKey, this, 'checked',
+    bindSettings(settings: Gio.Settings): void {
+        settings.bind(SETTINGS_KEY, this, 'checked',
             Gio.SettingsBindFlags.DEFAULT);
     }
 });
 
 const BatteryIndicator = GObject.registerClass(
 class BatteryIndicator extends SystemIndicator {
-    _init(): void {
-        super._init();
-    }
-
-    addBatteryToggle(settings: Gio.Settings, settingsKey: string): void {
+    addBatteryToggle(settings: Gio.Settings): void {
         const toggle = new BatteryToggle();
-        toggle.bindSettings(settings, settingsKey);
+        toggle.bindSettings(settings);
         this.quickSettingsItems.push(toggle);
     }
 
@@ -39,10 +37,9 @@ class BatteryIndicator extends SystemIndicator {
 });
 
 export function createBatteryIndicator(
-    settings: Gio.Settings,
-    settingsKey: string
+    settings: Gio.Settings
 ): SystemIndicator {
     const indicator = new BatteryIndicator();
-    indicator.addBatteryToggle(settings, settingsKey);
+    indicator.addBatteryToggle(settings);
     return indicator;
 }

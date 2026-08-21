@@ -10,6 +10,7 @@ export const DeviceState = Object.freeze({
     CHARGING: 1,
     DISCHARGING: 2,
     FULLY_CHARGED: 4,
+    PENDING_CHARGE: 5,
 } as const);
 
 const UPowerIface = `

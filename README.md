@@ -73,7 +73,18 @@ npm test
 npm run test:coverage
 ```
 
-`npm run check` runs both strict type-checking and the unit tests.
+Run the complete local check, including shell-script syntax validation, strict
+type-checking, and coverage-enforced tests:
+
+```bash
+npm run check
+```
+
+On a GNOME system with UPower available, run the generated-proxy smoke test:
+
+```bash
+npm run test:upower
+```
 
 ## Usage
 
@@ -98,6 +109,9 @@ is placed in `build/` and is not committed.
 Unit tests live in `tests/`. They run in Node.js with focused mocks for the
 GNOME Shell, GJS, GSettings, and D-Bus boundaries; hardware behavior still needs
 the manual checks described in `AGENTS.md`.
+
+The deferred audit items are recorded in [`findings.md`](findings.md). They are
+intentionally not part of the current implementation change.
 
 ## License
 
