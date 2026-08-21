@@ -6,6 +6,8 @@ interface Initializable {
 
 type InitializableConstructor = new() => Initializable;
 
+const blockedObjects = new WeakSet<object>();
+
 export const registerClass = vi.fn(<T extends InitializableConstructor>(
     registeredClass: T
 ): T => {
@@ -19,8 +21,16 @@ export const registerClass = vi.fn(<T extends InitializableConstructor>(
     });
 });
 
-export const signalHandlerBlock = vi.fn();
-export const signalHandlerUnblock = vi.fn();
+export const signalHandlerBlock = vi.fn((object: object): void => {
+    blockedObjects.add(object);
+});
+export const signalHandlerUnblock = vi.fn((object: object): void => {
+    blockedObjects.delete(object);
+});
+
+export function isSignalHandlerBlocked(object: object): boolean {
+    return blockedObjects.has(object);
+}
 
 const GObject = {
     registerClass,

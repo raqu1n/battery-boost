@@ -2,7 +2,11 @@ import type Gio from 'gi://Gio';
 
 import {beforeEach, describe, expect, it, vi} from 'vitest';
 
-import {signalHandlerBlock, signalHandlerUnblock} from './mocks/gobject.js';
+import {
+    isSignalHandlerBlocked,
+    signalHandlerBlock,
+    signalHandlerUnblock,
+} from './mocks/gobject.js';
 import {addExternalIndicator, notify} from './mocks/main.js';
 import {deferred} from './helpers/upowerFakes.js';
 
@@ -48,6 +52,7 @@ import BatteryBoostExtension from '../src/extension.js';
 
 class FakeSettings {
     value: boolean;
+    readonly changedHandlerId = 41;
     private _changedCallback: (() => unknown) | null = null;
 
     constructor(initialValue: boolean) {
@@ -57,18 +62,22 @@ class FakeSettings {
     connect = vi.fn((signal: string, callback: () => unknown): number => {
         expect(signal).toBe('changed::boost-enabled');
         this._changedCallback = callback;
-        return 41;
+        return this.changedHandlerId;
     });
 
     disconnect = vi.fn((handlerId: number): void => {
-        expect(handlerId).toBe(41);
+        expect(handlerId).toBe(this.changedHandlerId);
         this._changedCallback = null;
     });
 
     get_boolean = vi.fn((_key: string): boolean => this.value);
 
     set_boolean = vi.fn((_key: string, value: boolean): void => {
+        const changed = this.value !== value;
         this.value = value;
+
+        if (changed && !isSignalHandlerBlocked(this))
+            void this._changedCallback?.();
     });
 
     emitChanged(): unknown {
@@ -128,11 +137,35 @@ describe('BatteryBoostExtension lifecycle and synchronization', () => {
             expect.any(Function)
         );
         expect(indicatorMock.createBatteryIndicator).toHaveBeenCalledWith(
-            harness.settings,
-            'boost-enabled'
+            harness.settings
         );
         expect(addExternalIndicator).toHaveBeenCalledWith(harness.indicator);
         expect(harness.service.start).toHaveBeenCalledOnce();
+    });
+
+    it('cleans up resources when enabling the UI fails', () => {
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(
+            () => {});
+        const settings = new FakeSettings(false);
+        const extension = new BatteryBoostExtension({} as never);
+        vi.spyOn(extension, 'getSettings').mockReturnValue(
+            settings as unknown as Gio.Settings);
+        indicatorMock.createBatteryIndicator.mockImplementationOnce(() => {
+            throw new Error('indicator setup failed');
+        });
+
+        expect(() => extension.enable()).toThrow('indicator setup failed');
+
+        const service = batteryServiceMock.instances[0];
+        expect(service?.stop).toHaveBeenCalledOnce();
+        expect(settings.disconnect).toHaveBeenCalledWith(
+            settings.changedHandlerId
+        );
+        expect(consoleError).toHaveBeenCalledWith(
+            expect.stringContaining(
+                '[BatteryBoost] Failed to enable extension: Error: indicator setup failed'
+            )
+        );
     });
 
     it('synchronizes an external threshold change without applying it again', () => {
@@ -140,14 +173,17 @@ describe('BatteryBoostExtension lifecycle and synchronization', () => {
 
         harness.service.callbacks.onThresholdChanged(false);
 
-        expect(signalHandlerBlock).toHaveBeenCalledWith(harness.settings, 41);
+        expect(signalHandlerBlock).toHaveBeenCalledWith(
+            harness.settings,
+            harness.settings.changedHandlerId
+        );
         expect(harness.settings.set_boolean).toHaveBeenCalledWith(
             'boost-enabled',
             true
         );
         expect(signalHandlerUnblock).toHaveBeenCalledWith(
             harness.settings,
-            41
+            harness.settings.changedHandlerId
         );
         expect(harness.service.setThresholdEnabled).not.toHaveBeenCalled();
 
@@ -155,18 +191,28 @@ describe('BatteryBoostExtension lifecycle and synchronization', () => {
         expect(harness.settings.set_boolean).toHaveBeenCalledOnce();
     });
 
-    it('always unblocks the settings handler when synchronization throws', () => {
+    it('always unblocks the settings handler when synchronization fails', () => {
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(
+            () => {});
         const harness = enableExtension(false);
         harness.settings.set_boolean.mockImplementationOnce(() => {
             throw new Error('settings backend failed');
         });
 
         expect(() => harness.service.callbacks.onThresholdChanged(false))
-            .toThrow('settings backend failed');
-        expect(signalHandlerBlock).toHaveBeenCalledWith(harness.settings, 41);
+            .not.toThrow();
+        expect(consoleError).toHaveBeenCalledWith(
+            expect.stringContaining(
+                '[BatteryBoost] Failed to synchronize battery boost setting: Error: settings backend failed'
+            )
+        );
+        expect(signalHandlerBlock).toHaveBeenCalledWith(
+            harness.settings,
+            harness.settings.changedHandlerId
+        );
         expect(signalHandlerUnblock).toHaveBeenCalledWith(
             harness.settings,
-            41
+            harness.settings.changedHandlerId
         );
     });
 
@@ -191,7 +237,9 @@ describe('BatteryBoostExtension lifecycle and synchronization', () => {
         harness.extension.disable();
 
         expect(harness.service.stop).toHaveBeenCalledOnce();
-        expect(harness.settings.disconnect).toHaveBeenCalledWith(41);
+        expect(harness.settings.disconnect).toHaveBeenCalledWith(
+            harness.settings.changedHandlerId
+        );
         expect(harness.indicator.destroy).toHaveBeenCalledOnce();
 
         harness.service.callbacks.onThresholdChanged(false);
@@ -259,10 +307,13 @@ describe('BatteryBoostExtension mode changes', () => {
             'boost-enabled',
             false
         );
-        expect(signalHandlerBlock).toHaveBeenCalledWith(harness.settings, 41);
+        expect(signalHandlerBlock).toHaveBeenCalledWith(
+            harness.settings,
+            harness.settings.changedHandlerId
+        );
         expect(signalHandlerUnblock).toHaveBeenCalledWith(
             harness.settings,
-            41
+            harness.settings.changedHandlerId
         );
     });
 

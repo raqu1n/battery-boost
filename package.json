@@ -10,7 +10,9 @@
     "typecheck": "tsc --project tsconfig.json --noEmit && tsc --project tsconfig.test.json",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "check": "npm run typecheck && npm test"
+    "check:shell": "bash -n scripts/build.sh",
+    "check": "npm run check:shell && npm run typecheck && npm run test:coverage",
+    "test:upower": "npm run build && gjs -m scripts/check-upower.js"
   },
   "devDependencies": {
     "@girs/gjs": "^4.1.0",

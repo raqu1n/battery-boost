@@ -1,7 +1,8 @@
-import {beforeEach, describe, expect, it, vi} from 'vitest';
+import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 
 import {Cancellable} from '../mocks/gio.js';
 import {
+    FakeChangedProperties,
     FakeUPowerDeviceProxy,
     FakeUPowerProxy,
     deferred,
@@ -18,6 +19,7 @@ vi.mock(import('../../src/upower/proxies.js'), () => ({
         CHARGING: 1,
         DISCHARGING: 2,
         FULLY_CHARGED: 4,
+        PENDING_CHARGE: 5,
     } as const,
     createUPowerProxy: proxyMocks.createUPowerProxy,
     createUPowerDeviceProxy: proxyMocks.createUPowerDeviceProxy,
@@ -25,6 +27,7 @@ vi.mock(import('../../src/upower/proxies.js'), () => ({
 
 import {
     BatteryService,
+    BatteryServiceError,
     type BatteryServiceCallbacks,
 } from '../../src/upower/batteryService.js';
 
@@ -49,6 +52,20 @@ function createCallbacks(): TestCallbacks {
     };
 }
 
+const liveServices = new Set<BatteryService>();
+
+function createService(callbacks: BatteryServiceCallbacks): BatteryService {
+    const service = new BatteryService(callbacks);
+    liveServices.add(service);
+    return service;
+}
+
+afterEach(() => {
+    for (const service of liveServices)
+        service.stop();
+    liveServices.clear();
+});
+
 async function startWithDevice(
     deviceProxy = new FakeUPowerDeviceProxy()
 ): Promise<ServiceHarness> {
@@ -57,7 +74,7 @@ async function startWithDevice(
     proxyMocks.createUPowerProxy.mockResolvedValue(rootProxy);
     proxyMocks.createUPowerDeviceProxy.mockResolvedValue(deviceProxy);
     const callbacks = createCallbacks();
-    const service = new BatteryService(callbacks);
+    const service = createService(callbacks);
 
     service.start();
     await vi.waitFor(() => {
@@ -103,7 +120,7 @@ describe('BatteryService discovery and lifecycle', () => {
             return device;
         });
         const callbacks = createCallbacks();
-        const service = new BatteryService(callbacks);
+        const service = createService(callbacks);
 
         service.start();
         service.start();
@@ -135,7 +152,7 @@ describe('BatteryService discovery and lifecycle', () => {
         const consoleError = vi.spyOn(console, 'error').mockImplementation(
             () => {});
         proxyMocks.createUPowerProxy.mockRejectedValue('UPower is offline');
-        const service = new BatteryService(createCallbacks());
+        const service = createService(createCallbacks());
 
         service.start();
 
@@ -152,13 +169,16 @@ describe('BatteryService discovery and lifecycle', () => {
         rootProxy.EnumerateDevicesAsync.mockRejectedValue(
             new Error('enumeration denied'));
         proxyMocks.createUPowerProxy.mockResolvedValue(rootProxy);
-        const service = new BatteryService(createCallbacks());
+        const service = createService(createCallbacks());
 
         service.start();
 
         await vi.waitFor(() => {
             expect(consoleError).toHaveBeenCalledWith(
-                '[BatteryBoost] EnumerateDevices failed: enumeration denied');
+                expect.stringContaining(
+                    '[BatteryBoost] EnumerateDevices failed: Error: enumeration denied'
+                )
+            );
         });
         expect(proxyMocks.createUPowerDeviceProxy).not.toHaveBeenCalled();
     });
@@ -176,7 +196,7 @@ describe('BatteryService discovery and lifecycle', () => {
             .mockRejectedValueOnce(new Error('device disappeared'))
             .mockResolvedValueOnce(battery);
         const callbacks = createCallbacks();
-        const service = new BatteryService(callbacks);
+        const service = createService(callbacks);
 
         service.start();
 
@@ -184,7 +204,10 @@ describe('BatteryService discovery and lifecycle', () => {
             expect(callbacks.onThresholdChanged).toHaveBeenCalledWith(true);
         });
         expect(consoleDebug).toHaveBeenCalledWith(
-            '[BatteryBoost] Could not inspect /broken: device disappeared');
+            expect.stringContaining(
+                '[BatteryBoost] Could not inspect /broken: Error: device disappeared'
+            )
+        );
         expect(proxyMocks.createUPowerDeviceProxy).toHaveBeenCalledTimes(2);
     });
 
@@ -196,7 +219,7 @@ describe('BatteryService discovery and lifecycle', () => {
         proxyMocks.createUPowerDeviceProxy.mockReturnValue(
             pendingDevice.promise);
         const callbacks = createCallbacks();
-        const service = new BatteryService(callbacks);
+        const service = createService(callbacks);
         service.start();
         await vi.waitFor(() => {
             expect(rootProxy.EnumerateDevicesAsync).toHaveBeenCalledOnce();
@@ -233,7 +256,7 @@ describe('BatteryService discovery and lifecycle', () => {
                 : replacement
         );
         const callbacks = createCallbacks();
-        const service = new BatteryService(callbacks);
+        const service = createService(callbacks);
         service.start();
         await vi.waitFor(() => {
             expect(rootProxy.EnumerateDevicesAsync).toHaveBeenCalledOnce();
@@ -251,8 +274,12 @@ describe('BatteryService discovery and lifecycle', () => {
         service.stop();
         service.stop();
 
-        expect(firstBattery.disconnect).toHaveBeenCalledWith(17);
-        expect(replacement.disconnect).toHaveBeenCalledWith(17);
+        expect(firstBattery.disconnect).toHaveBeenCalledWith(
+            firstBattery.changedHandlerId
+        );
+        expect(replacement.disconnect).toHaveBeenCalledWith(
+            replacement.changedHandlerId
+        );
         expect(rootProxy.disconnectSignal).toHaveBeenCalledTimes(2);
         const cancellable = proxyMocks.createUPowerProxy.mock.calls[0][0];
         expect(cancellable.cancelled).toBe(true);
@@ -267,7 +294,7 @@ describe('BatteryService discovery and lifecycle', () => {
         proxyMocks.createUPowerProxy.mockResolvedValue(rootProxy);
         proxyMocks.createUPowerDeviceProxy.mockReturnValue(
             pendingDevice.promise);
-        const service = new BatteryService(createCallbacks());
+        const service = createService(createCallbacks());
         service.start();
         await vi.waitFor(() => {
             expect(rootProxy.EnumerateDevicesAsync).toHaveBeenCalledOnce();
@@ -285,7 +312,7 @@ describe('BatteryService discovery and lifecycle', () => {
     it('does not attach a root proxy that resolves after stop', async () => {
         const pendingRoot = deferred<FakeUPowerProxy>();
         proxyMocks.createUPowerProxy.mockReturnValue(pendingRoot.promise);
-        const service = new BatteryService(createCallbacks());
+        const service = createService(createCallbacks());
         service.start();
         const cancellable = proxyMocks.createUPowerProxy.mock.calls[0][0];
 
@@ -298,6 +325,93 @@ describe('BatteryService discovery and lifecycle', () => {
         expect(cancellable.cancelled).toBe(true);
         expect(rootProxy.connectSignal).not.toHaveBeenCalled();
         expect(rootProxy.EnumerateDevicesAsync).not.toHaveBeenCalled();
+    });
+
+    it('serializes discovery requests raised during initial enumeration', async () => {
+        const rootProxy = new FakeUPowerProxy();
+        const pendingEnumeration = deferred<[string[]]>();
+        const device = new FakeUPowerDeviceProxy();
+        rootProxy.EnumerateDevicesAsync.mockReturnValueOnce(
+            pendingEnumeration.promise);
+        proxyMocks.createUPowerProxy.mockResolvedValue(rootProxy);
+        proxyMocks.createUPowerDeviceProxy.mockResolvedValue(device);
+        const service = createService(createCallbacks());
+
+        service.start();
+        await vi.waitFor(() => {
+            expect(rootProxy.EnumerateDevicesAsync).toHaveBeenCalledOnce();
+        });
+
+        rootProxy.emit('DeviceAdded', '/added-battery');
+        expect(proxyMocks.createUPowerDeviceProxy).not.toHaveBeenCalled();
+
+        pendingEnumeration.resolve([[]]);
+        await vi.waitFor(() => {
+            expect(proxyMocks.createUPowerDeviceProxy).toHaveBeenCalledOnce();
+        });
+        expect(proxyMocks.createUPowerDeviceProxy).toHaveBeenCalledWith(
+            '/added-battery',
+            expect.any(Cancellable)
+        );
+    });
+
+    it('cleans up a device proxy when signal setup fails', async () => {
+        const rootProxy = new FakeUPowerProxy();
+        rootProxy.EnumerateDevicesAsync.mockResolvedValue([['/broken', '/battery']]);
+        const broken = new FakeUPowerDeviceProxy();
+        broken.connect.mockImplementationOnce(() => {
+            throw new Error('signal connection failed');
+        });
+        const working = new FakeUPowerDeviceProxy();
+        proxyMocks.createUPowerProxy.mockResolvedValue(rootProxy);
+        proxyMocks.createUPowerDeviceProxy
+            .mockResolvedValueOnce(broken)
+            .mockResolvedValueOnce(working);
+        const callbacks = createCallbacks();
+        const consoleDebug = vi.spyOn(console, 'debug').mockImplementation(
+            () => {});
+        const service = createService(callbacks);
+
+        service.start();
+
+        await vi.waitFor(() => {
+            expect(callbacks.onThresholdChanged).toHaveBeenCalledWith(true);
+        });
+        expect(consoleDebug).toHaveBeenCalledWith(
+            expect.stringContaining(
+                '[BatteryBoost] Could not inspect /broken: Error: signal connection failed'
+            )
+        );
+        expect(working.connect).toHaveBeenCalledOnce();
+    });
+
+    it('contains callback failures from device signals', async () => {
+        const rootProxy = new FakeUPowerProxy();
+        rootProxy.EnumerateDevicesAsync.mockResolvedValue([['/battery']]);
+        const device = new FakeUPowerDeviceProxy();
+        proxyMocks.createUPowerProxy.mockResolvedValue(rootProxy);
+        proxyMocks.createUPowerDeviceProxy.mockResolvedValue(device);
+        const callbacks = createCallbacks();
+        callbacks.onThresholdChanged.mockImplementation(() => {
+            throw new Error('UI synchronization failed');
+        });
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(
+            () => {});
+        const service = createService(callbacks);
+
+        service.start();
+        await vi.waitFor(() => {
+            expect(device.connect).toHaveBeenCalledOnce();
+        });
+
+        expect(consoleError).toHaveBeenCalledWith(
+            expect.stringContaining(
+                '[BatteryBoost] Failed to synchronize threshold state: Error: UI synchronization failed'
+            )
+        );
+        device.ChargeThresholdEnabled = false;
+        expect(() => device.emitChanged('ChargeThresholdEnabled'))
+            .not.toThrow();
     });
 });
 
@@ -349,8 +463,36 @@ describe('BatteryService battery transitions', () => {
         expect(harness.callbacks.onChargeCycleEnded).toHaveBeenCalledTimes(2);
     });
 
+    it('handles a full-state update that arrives after the percentage update',
+        async () => {
+            const harness = await startWithDevice(new FakeUPowerDeviceProxy({
+                state: 1,
+                percentage: 99,
+            }));
+
+            harness.deviceProxy.Percentage = 100;
+            harness.deviceProxy.State = 4;
+            harness.deviceProxy.emitChanged('State');
+
+            expect(harness.callbacks.onChargeCycleEnded).toHaveBeenCalledOnce();
+        });
+
+    it('treats a percentage crossing during pending charge as completion',
+        async () => {
+            const harness = await startWithDevice(new FakeUPowerDeviceProxy({
+                state: 5,
+                percentage: 99,
+            }));
+
+            harness.deviceProxy.Percentage = 100;
+            harness.deviceProxy.emitChanged('Percentage');
+
+            expect(harness.callbacks.onChargeCycleEnded).toHaveBeenCalledOnce();
+        });
+
     it('emits threshold changes and replaces a battery that becomes absent', async () => {
         const harness = await startWithDevice();
+        const staleCallback = harness.deviceProxy.connect.mock.calls[0][1];
         const replacement = new FakeUPowerDeviceProxy({
             thresholdEnabled: false,
         });
@@ -370,7 +512,16 @@ describe('BatteryService battery transitions', () => {
         await vi.waitFor(() => {
             expect(replacement.connect).toHaveBeenCalledOnce();
         });
-        expect(harness.deviceProxy.disconnect).toHaveBeenCalledWith(17);
+        expect(harness.deviceProxy.disconnect).toHaveBeenCalledWith(
+            harness.deviceProxy.changedHandlerId
+        );
+
+        replacement.State = 2;
+        staleCallback(
+            harness.deviceProxy,
+            new FakeChangedProperties(['State'])
+        );
+        expect(harness.callbacks.onChargeCycleEnded).not.toHaveBeenCalled();
     });
 });
 
@@ -381,10 +532,13 @@ describe('BatteryService threshold operations', () => {
     });
 
     it('rejects when no battery is available', async () => {
-        const service = new BatteryService(createCallbacks());
+        const service = createService(createCallbacks());
 
-        await expect(service.setThresholdEnabled(true)).rejects.toThrow(
-            'No battery found');
+        const operation = service.setThresholdEnabled(true);
+        await expect(operation).rejects.toBeInstanceOf(BatteryServiceError);
+        await expect(operation).rejects.toMatchObject({
+            code: 'no-battery',
+        });
     });
 
     it('rejects unsupported charge thresholds without making a remote call', async () => {
@@ -393,7 +547,7 @@ describe('BatteryService threshold operations', () => {
         }));
 
         await expect(harness.service.setThresholdEnabled(false)).rejects
-            .toThrow('Battery charge thresholds are not supported');
+            .toMatchObject({code: 'threshold-unsupported'});
         expect(harness.deviceProxy.EnableChargeThresholdRemote)
             .not.toHaveBeenCalled();
     });

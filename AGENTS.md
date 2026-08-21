@@ -19,10 +19,13 @@ Key facts:
 ## Files and code organization
 
 ```
-battery-health-widget/
+batteryhealth-widget/
 ├── AGENTS.md                                    # This file
 ├── README.md                                    # Project-level overview and install instructions
+├── LICENSE                                      # MIT license text
+├── findings.md                                  # Deferred code-review findings
 ├── .gitignore                                   # Ignore build artifacts, editors, OS files
+├── .github/workflows/ci.yml                     # Automated checks on pushes and pull requests
 ├── package.json                                 # TypeScript scripts and development dependencies
 ├── package-lock.json                            # Locked development dependency versions
 ├── tsconfig.json                                # Strict TypeScript compiler configuration
@@ -30,9 +33,12 @@ battery-health-widget/
 ├── vitest.config.ts                             # Unit test aliases, coverage, and thresholds
 ├── ambient.d.ts                                 # GJS and GNOME Shell ambient type imports
 ├── scripts/
-│   └── build.sh                                 # Compile, validate schema, and pack zip
+│   ├── build.sh                                 # Compile, validate schema, and pack zip
+│   └── check-upower.js                          # Generated-proxy UPower smoke test
 ├── src/                                         # Extension source
 │   ├── extension.ts                             # Settings and lifecycle coordinator
+│   ├── settings.ts                              # Shared GSettings key constants
+│   ├── utils.ts                                 # Shared error formatting and logging
 │   ├── metadata.json                            # Extension manifest
 │   ├── schemas/
 │   │   └── org.gnome.shell.extensions.battery-boost.gschema.xml
@@ -57,7 +63,9 @@ battery-health-widget/
 - **`extension.ts`:** Exports `BatteryBoostExtension`, coordinates GSettings, UI, notifications, and the battery service, and owns GNOME Shell extension lifecycle.
 - **`ui/batteryIndicator.ts`:** Defines the `BatteryToggle` and `BatteryIndicator` GObject classes and exports a small indicator factory.
 - **`upower/proxies.ts`:** Contains UPower D-Bus XML, explicit interfaces for runtime-generated proxy members, and asynchronous proxy factories.
-- **`upower/batteryService.ts`:** Owns UPower discovery, battery hotplug handling, property monitoring, charge-cycle transitions, and threshold operations.
+- **`upower/batteryService.ts`:** Owns UPower discovery, serialized battery hotplug handling, property monitoring, charge-cycle transitions, and threshold operations.
+- **`settings.ts`:** Defines the extension's GSettings key once for the coordinator and UI.
+- **`utils.ts`:** Keeps error formatting and diagnostic logging consistent across runtime modules.
 
 Behavior and ownership:
 
@@ -68,7 +76,7 @@ Behavior and ownership:
 - **UI sync:** `BatteryToggle` uses a bidirectional `Gio.Settings.bind()` binding for `boost-enabled` and `checked`.
 - **Auto-revert:** When boost is active, the extension reverts to `false` automatically on a **transition** to AC disconnected (battery state changes into discharging) or on a transition to 100% charge. It does not revert merely because the current state is discharging or already at 100%.
 - **Hotplug:** The extension watches UPower `DeviceAdded` and `DeviceRemoved` signals and safely switches battery proxies.
-- **Async safety:** `BatteryService` uses a lifecycle cancellable plus device and operation serial guards. The extension has its own settings-operation guard, so callbacks from removed devices, earlier clicks, or a disabled extension cannot overwrite newer state.
+- **Async safety:** `BatteryService` uses one lifecycle cancellable, serialized discovery, a device-generation guard, and threshold-operation invalidation. The extension has a settings-operation guard, so callbacks from removed devices, earlier clicks, or a disabled extension cannot overwrite newer state.
 - **Types:** GJS and GNOME Shell declarations come from `@girs`. The members generated dynamically by `Gio.DBusProxy.makeProxyWrapper()` are described by local `UPowerProxy` and `UPowerDeviceProxy` interfaces.
 
 ### `metadata.json`
@@ -104,6 +112,7 @@ After editing the XML, validate it by running `./scripts/build.sh`.
 - **Tests:** Vitest with Node-based GNOME/GJS boundary mocks
 - **Coverage:** Vitest V8 provider with enforced project thresholds
 - **Packaging:** `gnome-extensions pack`
+- **Validation:** Bash syntax checking, strict TypeScript checks, coverage-enforced tests, and GitHub Actions CI
 
 ## Build process
 
@@ -132,7 +141,9 @@ npm ci
 
 This produces `dist/battery-boost@raqu1n.github.io.shell-extension.zip`.
 
-Run `npm run typecheck` for a strict type check without emitting JavaScript.
+Run `npm run typecheck` for a strict type check without emitting JavaScript. Use
+`npm run check` for the full local validation and `npm run test:upower` for the
+optional generated-proxy smoke test against the local UPower service.
 
 ## Testing instructions
 
@@ -141,7 +152,7 @@ The project has a unit suite for logic and lifecycle behavior. Run automated val
 1. Install locked development dependencies: `npm ci`.
 2. Type-check source and tests: `npm run typecheck`.
 3. Run all unit tests: `npm test`.
-4. Optionally enforce and inspect coverage: `npm run test:coverage`.
+4. Enforce and inspect coverage: `npm run test:coverage`.
 5. Build the extension: `./scripts/build.sh`.
 6. Install the produced zip and enable it.
 7. Open the system menu and verify the "Battery Boost" toggle appears.
@@ -185,9 +196,11 @@ The unit tests alias `gi://` and `resource:///` imports to focused fakes. Tests 
 ## Notes for agents
 
 - `package.json` describes development tooling only. The extension manifest remains `src/metadata.json` and the GSettings schema remains the settings source of truth.
-- The repository has no CI configuration yet.
+- GitHub Actions runs `npm ci` and `npm run check` on pushes and pull requests.
 - Source files live in `src/`.
+- Deferred review items are documented in `findings.md`; do not treat them as fixed.
 - Run `npm run typecheck` after TypeScript changes.
 - Run `npm test` after behavioral changes; use `npm run test:coverage` when adding new logic.
+- Run `npm run test:upower` on a GNOME/UPower host when changing D-Bus proxy behavior.
 - Regenerate the distributable zip with `./scripts/build.sh` after any source change.
 - `build/`, `coverage/`, and `dist/` are ignored by git and created on demand.

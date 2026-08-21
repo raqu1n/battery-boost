@@ -28,8 +28,7 @@ describe('createBatteryIndicator', () => {
         const bind = vi.fn();
 
         const indicator = createBatteryIndicator(
-            asSettings(bind),
-            'custom-boost-key'
+            asSettings(bind)
         ) as unknown as TestIndicator;
 
         expect(indicator.quickSettingsItems).toHaveLength(1);
@@ -40,7 +39,7 @@ describe('createBatteryIndicator', () => {
             toggleMode: true,
         });
         expect(bind).toHaveBeenCalledWith(
-            'custom-boost-key',
+            'boost-enabled',
             toggle,
             'checked',
             0
@@ -58,8 +57,7 @@ describe('createBatteryIndicator', () => {
         });
 
         expect(() => createBatteryIndicator(
-            asSettings(bind),
-            'missing-key'
+            asSettings(bind)
         )).toThrow('schema key is unavailable');
     });
 });

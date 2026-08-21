@@ -27,29 +27,45 @@ export class FakeChangedProperties {
 }
 
 export class FakeUPowerProxy {
-    private readonly _signals = new Map<RootSignal, RootSignalCallback>();
+    private readonly _signals = new Map<
+        RootSignal,
+        {handlerId: number; callback: RootSignalCallback}
+    >();
     private _nextSignalId = 1;
 
     EnumerateDevicesAsync = vi.fn(
-        async (): Promise<[string[]]> => [[]]
+        async (
+            cancellable: {cancelled: boolean} | null = null
+        ): Promise<[string[]]> => {
+            if (cancellable?.cancelled)
+                throw new Error('Operation cancelled');
+
+            return [[]];
+        }
     );
 
     connectSignal = vi.fn((
         signal: RootSignal,
         callback: RootSignalCallback
     ): number => {
-        this._signals.set(signal, callback);
-        return this._nextSignalId++;
+        const handlerId = this._nextSignalId++;
+        this._signals.set(signal, {handlerId, callback});
+        return handlerId;
     });
 
-    disconnectSignal = vi.fn((_handlerId: number): void => {});
+    disconnectSignal = vi.fn((handlerId: number): void => {
+        for (const [signal, connection] of this._signals) {
+            if (connection.handlerId === handlerId)
+                this._signals.delete(signal);
+        }
+    });
 
     emit(signal: RootSignal, devicePath: string): void {
-        const callback = this._signals.get(signal);
-        if (!callback)
+        const connection = this._signals.get(signal);
+        if (!connection)
             throw new Error(`Signal ${signal} is not connected`);
 
-        callback(this, 'org.freedesktop.UPower', [devicePath]);
+        connection.callback(this, 'org.freedesktop.UPower', [devicePath]);
     }
 }
 
@@ -72,6 +88,7 @@ export class FakeUPowerDeviceProxy {
     ChargeThresholdEnabled: boolean;
     ChargeThresholdSupported: boolean;
     throwWhenSettingThreshold: unknown | null = null;
+    readonly changedHandlerId = 17;
     readonly thresholdCallbacks: ThresholdCallback[] = [];
     private _changedCallback: DeviceChangedCallback | null = null;
 
@@ -100,7 +117,7 @@ export class FakeUPowerDeviceProxy {
         callback: DeviceChangedCallback
     ): number => {
         this._changedCallback = callback;
-        return 17;
+        return this.changedHandlerId;
     });
 
     disconnect = vi.fn((_handlerId: number): void => {
