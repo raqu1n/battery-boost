@@ -72,11 +72,12 @@ Behavior and ownership:
 - **D-Bus:** `UPowerProxy` and `UPowerDeviceProxy` wrap the `org.freedesktop.UPower` and `org.freedesktop.UPower.Device` interfaces. Proxy construction and device enumeration are asynchronous so UPower discovery does not block GNOME Shell's main thread.
 - **UI:** `BatteryToggle` extends `QuickToggle` and binds its checked state bidirectionally to GSettings; `BatteryIndicator` hosts it in GNOME's Quick Settings menu.
 - **Lifecycle:** `BatteryBoostExtension.enable()` creates the service and indicator; `disable()` stops the service, disconnects settings, and destroys the indicator.
-- **State:** Settings key `boost-enabled` is a boolean. `false` means the configured charge limit is active; `true` means the one-cycle 100% boost is active.
+- **State:** Settings key `boost-enabled` is a supported external control and inspection API. It is a boolean: `false` means the configured charge limit is active; `true` means the one-cycle 100% boost is active. External writes must continue to follow the same apply, rollback, notification, and auto-revert path as Quick Toggle changes.
 - **UI sync:** `BatteryToggle` uses a bidirectional `Gio.Settings.bind()` binding for `boost-enabled` and `checked`.
 - **Auto-revert:** When boost is active, the extension reverts to `false` automatically on a **transition** to AC disconnected (battery state changes into discharging) or on a transition to 100% charge. It does not revert merely because the current state is discharging or already at 100%.
 - **Hotplug:** The extension watches UPower `DeviceAdded` and `DeviceRemoved` signals and safely switches battery proxies.
-- **Async safety:** `BatteryService` uses one lifecycle cancellable, serialized discovery, a device-generation guard, and threshold-operation invalidation. The extension has a settings-operation guard, so callbacks from removed devices, earlier clicks, or a disabled extension cannot overwrite newer state.
+- **Async safety:** `BatteryService` uses one lifecycle cancellable, serialized discovery, a device-generation guard, and a serialized last-request-wins threshold queue. The extension has a settings-operation guard, so callbacks from removed devices, earlier clicks, or a disabled extension cannot overwrite newer state.
+- **Recovery:** The service follows UPower name-owner changes and retries transient setup, enumeration, or inspection failures. It polls only while a known system battery is absent; normal hotplug handling remains signal-driven.
 - **Types:** GJS and GNOME Shell declarations come from `@girs`. The members generated dynamically by `Gio.DBusProxy.makeProxyWrapper()` are described by local `UPowerProxy` and `UPowerDeviceProxy` interfaces.
 
 ### `metadata.json`
@@ -97,6 +98,9 @@ Defines one key:
 </key>
 ```
 
+The schema is an intentional public control surface, not only UI persistence.
+Removing or renaming the schema or key is a breaking behavior change.
+
 After editing the XML, validate it by running `./scripts/build.sh`.
 
 ## Technology stack
@@ -109,6 +113,7 @@ After editing the XML, validate it by running `./scripts/build.sh`.
 - **Configuration:** GSettings via XML schema
 - **Type definitions:** `@girs/gjs` and `@girs/gnome-shell`
 - **Build:** TypeScript compiler (`tsc`)
+- **Build runtime:** Node.js 22.12 or newer (CI uses Node.js 24)
 - **Tests:** Vitest with Node-based GNOME/GJS boundary mocks
 - **Coverage:** Vitest V8 provider with enforced project thresholds
 - **Packaging:** `gnome-extensions pack`
@@ -127,10 +132,7 @@ gnome-extensions install dist/battery-boost@raqu1n.github.io.shell-extension.zip
 gnome-extensions enable battery-boost@raqu1n.github.io
 ```
 
-Restart GNOME Shell after installing:
-
-- Wayland: log out and back in
-- X11: press `Alt+F2`, type `r`, press Enter
+Log out and back in to restart GNOME Shell after installing.
 
 ### Build distributable zip
 
@@ -183,7 +185,7 @@ The unit tests alias `gi://` and `resource:///` imports to focused fakes. Tests 
 - Avoid `any`; isolate assertions at dynamic GJS boundaries such as D-Bus proxy construction and `GObject.registerClass()`.
 - Prefix private instance properties with `_` (e.g. `this._settings`).
 - Use `gettext as _` for translatable strings.
-- Handle D-Bus and proxy errors with `try/catch` and log with `console.error('[BatteryBoost] ...')`.
+- Handle D-Bus and proxy errors with `try/catch` and the shared logging helpers.
 - Use `signal_handler_block` / `signal_handler_unblock` when updating GSettings to avoid recursive change handlers.
 
 ## Security considerations
@@ -198,7 +200,7 @@ The unit tests alias `gi://` and `resource:///` imports to focused fakes. Tests 
 - `package.json` describes development tooling only. The extension manifest remains `src/metadata.json` and the GSettings schema remains the settings source of truth.
 - GitHub Actions runs `npm ci` and `npm run check` on pushes and pull requests.
 - Source files live in `src/`.
-- Deferred review items are documented in `findings.md`; do not treat them as fixed.
+- Audit results, retained design choices, and open product decisions are documented in `findings.md`.
 - Run `npm run typecheck` after TypeScript changes.
 - Run `npm test` after behavioral changes; use `npm run test:coverage` when adding new logic.
 - Run `npm run test:upower` on a GNOME/UPower host when changing D-Bus proxy behavior.

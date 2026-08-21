@@ -7,12 +7,17 @@ type RootSignalCallback = (
     parameters: [string]
 ) => void;
 
+type NameOwnerCallback = (proxy: FakeUPowerProxy) => void;
+
 type DeviceChangedCallback = (
     proxy: FakeUPowerDeviceProxy,
     changed: FakeChangedProperties
 ) => void;
 
-type ThresholdCallback = (result: unknown, error: unknown | null) => void;
+interface ThresholdOperation {
+    resolve(result: []): void;
+    reject(error: unknown): void;
+}
 
 export class FakeChangedProperties {
     private readonly _changedNames: Set<string>;
@@ -27,11 +32,16 @@ export class FakeChangedProperties {
 }
 
 export class FakeUPowerProxy {
+    g_name_owner: string | null = 'org.freedesktop.UPower.owner';
     private readonly _signals = new Map<
         RootSignal,
         {handlerId: number; callback: RootSignalCallback}
     >();
     private _nextSignalId = 1;
+    private _nameOwnerConnection: {
+        handlerId: number;
+        callback: NameOwnerCallback;
+    } | null = null;
 
     EnumerateDevicesAsync = vi.fn(
         async (
@@ -53,6 +63,20 @@ export class FakeUPowerProxy {
         return handlerId;
     });
 
+    connect = vi.fn((
+        _signal: 'notify::g-name-owner',
+        callback: NameOwnerCallback
+    ): number => {
+        const handlerId = this._nextSignalId++;
+        this._nameOwnerConnection = {handlerId, callback};
+        return handlerId;
+    });
+
+    disconnect = vi.fn((handlerId: number): void => {
+        if (this._nameOwnerConnection?.handlerId === handlerId)
+            this._nameOwnerConnection = null;
+    });
+
     disconnectSignal = vi.fn((handlerId: number): void => {
         for (const [signal, connection] of this._signals) {
             if (connection.handlerId === handlerId)
@@ -66,6 +90,11 @@ export class FakeUPowerProxy {
             throw new Error(`Signal ${signal} is not connected`);
 
         connection.callback(this, 'org.freedesktop.UPower', [devicePath]);
+    }
+
+    emitNameOwner(owner: string | null): void {
+        this.g_name_owner = owner;
+        this._nameOwnerConnection?.callback(this);
     }
 }
 
@@ -89,7 +118,7 @@ export class FakeUPowerDeviceProxy {
     ChargeThresholdSupported: boolean;
     throwWhenSettingThreshold: unknown | null = null;
     readonly changedHandlerId = 17;
-    readonly thresholdCallbacks: ThresholdCallback[] = [];
+    readonly thresholdOperations: ThresholdOperation[] = [];
     private _changedCallback: DeviceChangedCallback | null = null;
 
     constructor(options: FakeDeviceOptions = {}) {
@@ -102,14 +131,13 @@ export class FakeUPowerDeviceProxy {
         this.ChargeThresholdSupported = options.thresholdSupported ?? true;
     }
 
-    EnableChargeThresholdRemote = vi.fn((
-        _enabled: boolean,
-        callback: ThresholdCallback
-    ): void => {
+    EnableChargeThresholdAsync = vi.fn((_enabled: boolean): Promise<[]> => {
         if (this.throwWhenSettingThreshold)
             throw this.throwWhenSettingThreshold;
 
-        this.thresholdCallbacks.push(callback);
+        const operation = deferred<[]>();
+        this.thresholdOperations.push(operation);
+        return operation.promise;
     });
 
     connect = vi.fn((
@@ -138,11 +166,14 @@ export class FakeUPowerDeviceProxy {
         callbackIndex: number,
         error: unknown | null = null
     ): void {
-        const callback = this.thresholdCallbacks[callbackIndex];
-        if (!callback)
-            throw new Error(`Threshold callback ${callbackIndex} is missing`);
+        const operation = this.thresholdOperations[callbackIndex];
+        if (!operation)
+            throw new Error(`Threshold operation ${callbackIndex} is missing`);
 
-        callback([], error);
+        if (error === null)
+            operation.resolve([]);
+        else
+            operation.reject(error);
     }
 }
 

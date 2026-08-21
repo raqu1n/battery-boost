@@ -47,9 +47,16 @@ const UPowerDeviceIface = `
 type UPowerSignal = 'DeviceAdded' | 'DeviceRemoved';
 
 export interface UPowerProxy {
+    readonly g_name_owner: string | null;
+
     EnumerateDevicesAsync(
         cancellable: Gio.Cancellable | null
     ): Promise<[string[]]>;
+    connect(
+        signal: 'notify::g-name-owner',
+        callback: (proxy: UPowerProxy) => void
+    ): number;
+    disconnect(handlerId: number): void;
     connectSignal(
         signal: UPowerSignal,
         callback: (
@@ -70,10 +77,7 @@ export interface UPowerDeviceProxy {
     readonly ChargeThresholdEnabled: boolean;
     readonly ChargeThresholdSupported: boolean;
 
-    EnableChargeThresholdRemote(
-        enabled: boolean,
-        callback: (result: unknown, error: unknown | null) => void
-    ): void;
+    EnableChargeThresholdAsync(enabled: boolean): Promise<[]>;
     connect(
         signal: 'g-properties-changed',
         callback: (
@@ -117,7 +121,7 @@ export function createUPowerProxy(
 
 export function createUPowerDeviceProxy(
     devicePath: string,
-    cancellable: Gio.Cancellable | null
+    cancellable: Gio.Cancellable
 ): Promise<UPowerDeviceProxy> {
     return UPowerDeviceProxyConstructor.newAsync(
         Gio.DBus.system,

@@ -14,6 +14,7 @@ export default defineConfig({
         include: ['tests/**/*.test.ts'],
         alias: {
             'gi://Gio': testFile('./tests/mocks/gio.ts'),
+            'gi://GLib': testFile('./tests/mocks/glib.ts'),
             'gi://GObject': testFile('./tests/mocks/gobject.ts'),
             'resource:///org/gnome/shell/extensions/extension.js':
                 testFile('./tests/mocks/extensionApi.ts'),

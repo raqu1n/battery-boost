@@ -10,6 +10,9 @@ const cancellable = new Gio.Cancellable();
 
 try {
     const upower = await createUPowerProxy(cancellable);
+    if (typeof upower.EnumerateDevicesAsync !== 'function')
+        throw new Error('UPower proxy is missing EnumerateDevicesAsync');
+
     const [devicePaths] = await upower.EnumerateDevicesAsync(cancellable);
 
     let batteryCount = 0;
@@ -18,6 +21,11 @@ try {
             devicePath,
             cancellable
         );
+        if (typeof device.EnableChargeThresholdAsync !== 'function') {
+            throw new Error(
+                `${devicePath}: proxy is missing EnableChargeThresholdAsync`
+            );
+        }
 
         if (device.Type !== BATTERY_DEVICE_TYPE ||
             !device.PowerSupply || !device.IsPresent)

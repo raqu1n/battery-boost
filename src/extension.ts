@@ -39,7 +39,8 @@ export default class BatteryBoostExtension extends Extension {
 
             this._batteryService = new BatteryService({
                 onThresholdChanged: thresholdEnabled => {
-                    this._setBoostEnabledWithoutApplying(!thresholdEnabled);
+                    this._setBoostEnabledWithoutApplying(
+                        thresholdEnabled === false);
                 },
                 onChargeCycleEnded: () => this._onChargeCycleEnded(),
             });
@@ -135,8 +136,8 @@ export default class BatteryBoostExtension extends Extension {
                 return;
 
             logError('Failed to set threshold', error);
-            this._notify(modeErrorMessage(error));
             this._setBoostEnabledWithoutApplying(!boostEnabled);
+            this._notify(modeErrorMessage(error));
             return;
         }
 
@@ -188,6 +189,10 @@ export default class BatteryBoostExtension extends Extension {
     }
 
     private _notify(message: string): void {
-        Main.notify(_('Battery Boost'), message);
+        try {
+            Main.notify(_('Battery Boost'), message);
+        } catch (error) {
+            logError('Failed to show notification', error);
+        }
     }
 }

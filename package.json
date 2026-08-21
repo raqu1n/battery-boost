@@ -5,21 +5,25 @@
   "type": "module",
   "private": true,
   "license": "MIT",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
     "build": "tsc --project tsconfig.json",
     "typecheck": "tsc --project tsconfig.json --noEmit && tsc --project tsconfig.test.json",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "check:shell": "bash -n scripts/build.sh",
-    "check": "npm run check:shell && npm run typecheck && npm run test:coverage",
+    "check:scripts": "bash -n scripts/build.sh && node --check scripts/check-upower.js",
+    "check:schema": "glib-compile-schemas --strict --dry-run src/schemas",
+    "check": "npm run check:scripts && npm run check:schema && npm run typecheck && npm run test:coverage",
     "test:upower": "npm run build && gjs -m scripts/check-upower.js"
   },
   "devDependencies": {
     "@girs/gjs": "^4.1.0",
     "@girs/gnome-shell": "^50.0.4",
-    "@types/node": "^26.2.0",
-    "@vitest/coverage-v8": "^4.1.10",
+    "@types/node": "^24.13.3",
+    "@vitest/coverage-v8": "^4.1.11",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   }
 }
