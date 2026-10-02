@@ -7,7 +7,7 @@ Once the current charging cycle ends, either the AC is unplugged or the battery 
 
 ## Requirements
 
-- GNOME Shell 50+
+- GNOME Shell 50
 - A laptop whose battery charge thresholds are supported by UPower
 - UPower running with permission to change charge thresholds
 
@@ -45,14 +45,3 @@ Then restart GNOME Shell.
 
 External changes follow the same validation, rollback, notification, and
 auto-revert behavior as changes made with the Quick Settings toggle.
-
-## Building the zip
-
-```bash
-npm ci
-./scripts/build.sh
-```
-
-The build compiles the TypeScript modules under `src/` to readable JavaScript,
-validates the GSettings schema, and produces
-`dist/battery-boost@raqu1n.github.io.shell-extension.zip`.
