@@ -141,14 +141,6 @@ export default class BatteryBoostExtension extends Extension {
             return;
         }
 
-        if (this._settings !== settings ||
-            this._batteryService !== batteryService ||
-            operationSerial !== this._operationSerial)
-            return;
-
-        this._notify(boostEnabled
-            ? _('Battery boost enabled: charging to 100%')
-            : _('Battery boost ended — configured limit restored'));
     }
 
     private _setBoostEnabledWithoutApplying(enabled: boolean): void {

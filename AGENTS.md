@@ -1,209 +1,70 @@
 # AGENTS.md — Battery Boost
 
-This file documents the project for coding agents. It is based on the actual source files; update it when the architecture or workflow changes.
+Concise project notes for coding agents. Keep these aligned with the source and workflow.
 
-## Project overview
+## Project
 
-Battery Boost is a GNOME Shell extension that adds a Quick Settings toggle to temporarily disable a laptop's configured charge limit and charge to 100%. It targets GNOME Shell 50, uses modern ES modules, and communicates with the system's UPower service over D-Bus.
+- Battery Boost is a GNOME Shell Quick Settings extension that temporarily disables a laptop's charge limit and charges to 100%.
+- Runtime: GNOME Shell/GJS ES modules; authoring language: strict TypeScript, compiled to JavaScript.
+- Extension UUID: `battery-boost@raqu1n.github.io`; see `src/metadata.json` for supported Shell versions.
+- UPower is accessed over the system D-Bus. Settings schema: `org.gnome.shell.extensions.battery-boost`.
+- Node.js 22.12+ is required for development and builds.
 
-Key facts:
+## Layout
 
-- **Extension UUID:** `battery-boost@raqu1n.github.io`
-- **Language:** TypeScript compiled to JavaScript (GNOME Shell / GJS)
-- **Settings schema:** `org.gnome.shell.extensions.battery-boost`
-- **GNOME Shell version:** 50
-- **Repository root:** `/home/malte/repos/batteryhealth-widget`
-- **Extension source directory:** `src/`
-
-## Files and code organization
-
-```
-batteryhealth-widget/
-├── AGENTS.md                                    # This file
-├── README.md                                    # Project-level overview and install instructions
-├── .gitignore                                   # Ignore build artifacts, editors, OS files
-├── .github/workflows/ci.yml                     # Automated checks on pushes and pull requests
-├── package.json                                 # TypeScript scripts and development dependencies
-├── package-lock.json                            # Locked development dependency versions
-├── eslint.config.js                             # ESLint rules for TypeScript and JavaScript
-├── tsconfig.json                                # Strict TypeScript compiler configuration
-├── tsconfig.test.json                           # Type-checking for tests and test configuration
-├── vitest.config.ts                             # Unit test aliases, coverage, and thresholds
-├── ambient.d.ts                                 # GJS and GNOME Shell ambient type imports
-├── scripts/
-│   ├── build.sh                                 # Compile, validate schema, and pack zip
-│   └── check-upower.js                          # Generated-proxy UPower smoke test
-├── src/                                         # Extension source
-│   ├── extension.ts                             # Settings and lifecycle coordinator
-│   ├── settings.ts                              # Shared GSettings key constants
-│   ├── utils.ts                                 # Shared error formatting and logging
-│   ├── metadata.json                            # Extension manifest
-│   ├── schemas/
-│   │   └── org.gnome.shell.extensions.battery-boost.gschema.xml
-│   ├── ui/
-│   │   └── batteryIndicator.ts                  # Quick Toggle and System Indicator
-│   └── upower/
-│       ├── batteryService.ts                    # Discovery, monitoring, and thresholds
-│       └── proxies.ts                           # Typed D-Bus proxy construction
-├── tests/                                       # Vitest unit tests and GNOME/GJS fakes
-│   ├── helpers/                                 # Reusable UPower test doubles
-│   ├── mocks/                                   # Aliased gi:// and resource:/// modules
-│   ├── ui/                                      # Quick Settings UI tests
-│   ├── upower/                                  # Proxy and battery service tests
-│   └── extension.test.ts                        # Extension coordinator tests
-├── build/                                       # Generated staging directory (ignored by git)
-├── coverage/                                    # Generated coverage reports (ignored by git)
-└── dist/                                        # Packaged distributable (ignored by git)
+```text
+src/extension.ts                Lifecycle, settings, and UI coordination
+src/ui/batteryIndicator.ts      Quick Settings toggle and indicator
+src/upower/batteryService.ts    Battery discovery, monitoring, and thresholds
+src/upower/proxies.ts           Typed UPower D-Bus proxy factories
+src/settings.ts, src/utils.ts   Shared settings key and logging helpers
+src/metadata.json               GNOME extension manifest
+src/schemas/                    GSettings schema source
+ambient.d.ts                    GJS and GNOME Shell ambient types
+tests/                          Vitest tests and GNOME/GJS boundary mocks
+scripts/build.sh                Compile, validate schema, and package extension
+scripts/check-upower.js         Optional generated-proxy smoke test
+.github/workflows/ci.yml        CI validation workflow
+package.json                    Development commands and dependencies
+tsconfig*.json                  Strict source and test TypeScript configuration
+vitest.config.ts                Test aliases and coverage thresholds
+eslint.config.js                Lint rules
+build/, coverage/, dist/        Generated and ignored output
 ```
 
-### Runtime modules
+## Runtime behavior and invariants
 
-- **`extension.ts`:** Exports `BatteryBoostExtension`, coordinates GSettings, UI, notifications, and the battery service, and owns GNOME Shell extension lifecycle.
-- **`ui/batteryIndicator.ts`:** Defines the `BatteryToggle` and `BatteryIndicator` GObject classes and exports a small indicator factory.
-- **`upower/proxies.ts`:** Contains UPower D-Bus XML, explicit interfaces for runtime-generated proxy members, and asynchronous proxy factories.
-- **`upower/batteryService.ts`:** Owns UPower discovery, serialized battery hotplug handling, property monitoring, charge-cycle transitions, and threshold operations.
-- **`settings.ts`:** Defines the extension's GSettings key once for the coordinator and UI.
-- **`utils.ts`:** Keeps error formatting and diagnostic logging consistent across runtime modules.
+- `extension.ts` owns lifecycle: enable creates the service and indicator; disable stops the service, disconnects settings, and destroys the indicator.
+- `BatteryToggle` binds `checked` bidirectionally to the public `boost-enabled` GSettings key.
+- `boost-enabled=false` means the configured charge limit is active; `true` requests one boost cycle. External writes must use the same apply, rollback, error-handling, and auto-revert path as UI changes.
+- Auto-revert only on a transition to AC-disconnected/discharging or to 100% charge, not just because the battery is already in either state.
+- Inspect all batteries as needed, but monitor one present, threshold-capable battery at a time. An unsupported battery may be retained for reporting; never broadcast threshold writes to every battery.
+- Follow UPower owner and hotplug changes; retry transient setup/enumeration failures and poll while a known system battery is absent.
+- Preserve async safety: serialized discovery and last-request-wins threshold writes; lifecycle cancellation and device/operation guards prevent stale results changing current state.
+- Stopping invalidates an in-flight threshold result but may not cancel the underlying generated D-Bus hardware call.
 
-Behavior and ownership:
+## Development and validation
 
-- **D-Bus:** `UPowerProxy` and `UPowerDeviceProxy` wrap the `org.freedesktop.UPower` and `org.freedesktop.UPower.Device` interfaces. Proxy construction and device enumeration are asynchronous so UPower discovery does not block GNOME Shell's main thread.
-- **UI:** `BatteryToggle` extends `QuickToggle` and binds its checked state bidirectionally to GSettings; `BatteryIndicator` hosts it in GNOME's Quick Settings menu.
-- **Lifecycle:** `BatteryBoostExtension.enable()` creates the service and indicator; `disable()` stops the service, disconnects settings, and destroys the indicator.
-- **State:** Settings key `boost-enabled` is a supported external control and inspection API. It is a boolean: `false` means the configured charge limit is active; `true` means the one-cycle 100% boost is active. External writes must continue to follow the same apply, rollback, notification, and auto-revert path as Quick Toggle changes.
-- **UI sync:** `BatteryToggle` uses a bidirectional `Gio.Settings.bind()` binding for `boost-enabled` and `checked`.
-- **Auto-revert:** When boost is active, the extension reverts to `false` automatically on a **transition** to AC disconnected (battery state changes into discharging) or on a transition to 100% charge. It does not revert merely because the current state is discharging or already at 100%.
-- **Battery selection:** Discovery may inspect multiple system batteries, but the service monitors one present, threshold-capable battery at a time. An unsupported battery is retained only as a fallback for reporting `threshold-unsupported`; threshold writes are not broadcast to every battery.
-- **Hotplug:** The extension watches UPower `DeviceAdded` and `DeviceRemoved` signals and rediscoveries a replacement when the selected battery becomes unavailable.
-- **Async safety:** `BatteryService` uses one lifecycle cancellable, serialized discovery, a device-generation guard, and a serialized last-request-wins threshold queue. The extension has a settings-operation guard, so stale callbacks and completed results cannot overwrite newer settings or selected-device state. The generated threshold method itself is not passed the lifecycle cancellable, so stopping invalidates its result but does not guarantee cancellation of an already-running hardware call.
-- **Recovery:** The service follows UPower name-owner changes and retries transient setup, enumeration, and inspection failures. It also polls while a known system battery is absent; normal hotplug handling remains signal-driven.
-- **Types:** GJS and GNOME Shell declarations come from `@girs`. The members generated dynamically by `Gio.DBusProxy.makeProxyWrapper()` are described by local `UPowerProxy` and `UPowerDeviceProxy` interfaces.
+- Install locked dependencies with `npm ci`.
+- `npm run check` runs shell/schema checks, source and test type checks, ESLint, and coverage-enforced tests.
+- Focused commands: `npm run typecheck`, `npm run lint`, `npm test`, and `npm run test:coverage`.
+- Coverage gates: 90% statements, 80% branches, 100% functions, and 90% lines.
+- `./scripts/build.sh` compiles TypeScript, validates the schema, stages runtime files, and creates `dist/battery-boost@raqu1n.github.io.shell-extension.zip`.
+- Install and enable the built extension with `gnome-extensions install dist/battery-boost@raqu1n.github.io.shell-extension.zip` and `gnome-extensions enable battery-boost@raqu1n.github.io`.
+- After installation, verify the toggle in a GNOME session; threshold behavior requires compatible hardware.
+- `npm run test:upower` optionally checks generated proxies against local GJS/UPower; hardware validation requires a battery exposing charge-threshold support.
+- CI installs with `npm ci` and runs `npm run check`. Run the build after runtime or schema changes.
+- Vitest mocks GNOME/GJS boundaries. Prefer tests of observable behavior and boundary interactions over duplicating GNOME internals.
 
-### `metadata.json`
+## Working conventions
 
-Standard GNOME Shell extension manifest:
+- Keep the schema key `boost-enabled` stable: it is a public control surface; renaming/removing it is a breaking change.
+- Use GNOME Shell ES module imports, four-space indentation, `const`/`let`, strict types, and avoid `any` except at dynamic GJS boundaries.
+- Prefix private instance properties with `_`; use `gettext as _` for translatable strings and shared logging helpers for errors.
+- Keep generated output out of source changes. Ensure the distributable contains only runtime assets, not development files or secrets.
+- After TypeScript behavior changes, run type checks and tests; after schema changes, validate/build; after runtime changes, rebuild the package.
 
-- `uuid`, `name`, `description`, `url`
-- `shell-version`: supported GNOME Shell release (`50`)
-- `settings-schema`: links the extension to its GSettings schema
+## Security
 
-### `schemas/org.gnome.shell.extensions.battery-boost.gschema.xml`
-
-Defines one key:
-
-```xml
-<key name="boost-enabled" type="b">
-  <default>false</default>
-</key>
-```
-
-The schema is an intentional public control surface, not only UI persistence.
-Removing or renaming the schema or key is a breaking behavior change.
-
-After editing the XML, validate it by running `./scripts/build.sh`.
-
-## Technology stack
-
-- **Authoring language:** TypeScript with strict checking
-- **Runtime:** GNOME Shell / GJS executing generated JavaScript
-- **Module system:** ES modules (`import Gio from 'gi://Gio';`)
-- **UI toolkit:** GNOME Shell Quick Settings API (`SystemIndicator`, `QuickToggle`)
-- **D-Bus:** UPower system bus (`org.freedesktop.UPower`)
-- **Configuration:** GSettings via XML schema
-- **Type definitions:** `@girs/gjs` and `@girs/gnome-shell`
-- **Build:** TypeScript compiler (`tsc`)
-- **Lint:** ESLint on TypeScript source, tests, and JavaScript tooling
-- **Build runtime:** Node.js 22.12 or newer (CI uses Node.js 24)
-- **Tests:** Vitest with Node-based GNOME/GJS boundary mocks
-- **Coverage:** Vitest V8 provider with enforced project thresholds
-- **Packaging:** `gnome-extensions pack`
-- **Validation:** Bash syntax checking, schema validation, strict TypeScript checks, ESLint, coverage-enforced tests, and GitHub Actions CI
-
-## Build process
-
-The extension ships as generated JavaScript because GNOME Shell does not execute TypeScript. The build script compiles TypeScript into `build/`, validates the GSettings schema, copies only the runtime assets into that staging directory, and packages it.
-
-### Local install
-
-```bash
-npm ci
-./scripts/build.sh
-gnome-extensions install dist/battery-boost@raqu1n.github.io.shell-extension.zip
-gnome-extensions enable battery-boost@raqu1n.github.io
-```
-
-Log out and back in to restart GNOME Shell after installing.
-
-### Build distributable zip
-
-```bash
-npm ci
-./scripts/build.sh
-```
-
-This produces `dist/battery-boost@raqu1n.github.io.shell-extension.zip`.
-
-Run `npm run typecheck` for a strict type check without emitting JavaScript.
-`npm run lint` lints TypeScript source, tests, and JavaScript tooling. Use
-`npm run check` for the full local validation and `npm run test:upower` for the
-optional generated-proxy smoke test against the local UPower service.
-
-## Testing instructions
-
-The project has a unit suite for logic and lifecycle behavior. Run automated validation first, then test the generated extension manually:
-
-1. Install locked development dependencies: `npm ci`.
-2. Type-check source and tests: `npm run typecheck`.
-3. Run all unit tests: `npm test`.
-4. Enforce and inspect coverage: `npm run test:coverage`.
-5. Build the extension: `./scripts/build.sh`.
-6. Install the produced zip and enable it.
-7. Open the system menu and verify the "Battery Boost" toggle appears.
-8. Click the toggle and confirm the setting changes via GSettings:
-   ```bash
-   gsettings get org.gnome.shell.extensions.battery-boost boost-enabled
-   ```
-9. Discover a battery path and verify the underlying UPower state:
-   ```bash
-   BATTERY_PATH="$(upower -e | grep '/battery_' | head -n1)"
-   upower -i "${BATTERY_PATH}" | grep charge-threshold
-   ```
-10. If supported, confirm that maximum mode reverts to healthy after unplugging AC or reaching 100%.
-11. Watch logs during testing:
-   ```bash
-   journalctl -f -o cat /usr/bin/gnome-shell
-   ```
-
-Only hardware and UPower versions that expose `ChargeThresholdSupported` and `EnableChargeThreshold` can exercise the core feature.
-
-The unit tests alias `gi://` and `resource:///` imports to focused fakes. Tests should assert observable extension behavior and boundary interactions rather than duplicating GNOME Shell internals. Coverage thresholds are 90% statements, 80% branches, 100% functions, and 90% lines.
-
-## Code style guidelines
-
-- Use GNOME Shell extension ES module imports (e.g. `import Gio from 'gi://Gio';`).
-- Indent with 4 spaces.
-- Use `const` and `let`; avoid `var`.
-- Keep strict TypeScript enabled and prefer explicit return types for methods.
-- Avoid `any`; isolate assertions at dynamic GJS boundaries such as D-Bus proxy construction and `GObject.registerClass()`.
-- Prefix private instance properties with `_` (e.g. `this._settings`).
-- Use `gettext as _` for translatable strings.
-- Handle D-Bus and proxy errors with `try/catch` and the shared logging helpers.
-- Use `signal_handler_block` / `signal_handler_unblock` when updating GSettings to avoid recursive change handlers.
-
-## Security considerations
-
-- The extension operates on the **system D-Bus** (`Gio.DBus.system`) with UPower. It calls `EnableChargeThreshold` to change hardware charge limits.
-- The extension does not persist passwords, store secrets, or execute arbitrary commands.
-- The only writable state is the single GSettings key `boost-enabled` and the UPower threshold.
-- The zip distributable should not include unrelated files such as `.git`, editor backups, or environment files. `gnome-extensions pack` generally handles this, but verify the contents of generated zips when adding new files.
-
-## Notes for agents
-
-- `package.json` describes development tooling only. The extension manifest remains `src/metadata.json` and the GSettings schema remains the settings source of truth.
-- GitHub Actions runs `npm ci` and `npm run check` on pushes and pull requests.
-- Source files live in `src/`.
-- Run `npm run typecheck` after TypeScript changes.
-- Run `npm test` after behavioral changes; use `npm run test:coverage` when adding new logic.
-- Run `npm run test:upower` on a GNOME/UPower host when changing D-Bus proxy behavior.
-- Regenerate the distributable zip with `./scripts/build.sh` after any source change.
-- `build/`, `coverage/`, and `dist/` are ignored by git and created on demand.
+- The extension calls UPower's `EnableChargeThreshold` over the system D-Bus, which changes hardware charging behavior.
+- It stores no credentials and executes no arbitrary commands; writable state is limited to the extension setting and UPower threshold.

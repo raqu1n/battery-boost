@@ -282,17 +282,14 @@ describe('BatteryBoostExtension mode changes', () => {
         {
             boostEnabled: true,
             thresholdEnabled: false,
-            notification: 'Battery boost enabled: charging to 100%',
         },
         {
             boostEnabled: false,
             thresholdEnabled: true,
-            notification: 'Battery boost ended — configured limit restored',
         },
-    ])('applies and reports a successful mode change: $notification', async ({
+    ])('applies a successful mode change without notifying: $boostEnabled', async ({
         boostEnabled,
         thresholdEnabled,
-        notification,
     }) => {
         const harness = enableExtension(boostEnabled);
         harness.service.setThresholdEnabled.mockResolvedValue(true);
@@ -302,8 +299,9 @@ describe('BatteryBoostExtension mode changes', () => {
         await vi.waitFor(() => {
             expect(harness.service.setThresholdEnabled).toHaveBeenCalledWith(
                 thresholdEnabled);
-            expect(notify).toHaveBeenCalledWith('Battery Boost', notification);
         });
+        await waitForAsyncWork();
+        expect(notify).not.toHaveBeenCalled();
     });
 
     it('rolls back the setting and reports a current operation failure', async () => {
@@ -368,19 +366,13 @@ describe('BatteryBoostExtension mode changes', () => {
             expect(harness.service.setThresholdEnabled).toHaveBeenCalledTimes(2);
         });
         current.resolve(true);
-        await vi.waitFor(() => {
-            expect(notify).toHaveBeenCalledOnce();
-        });
+        await waitForAsyncWork();
         earlier.reject(new Error('late failure'));
         await waitForAsyncWork();
 
         expect(consoleError).not.toHaveBeenCalled();
         expect(harness.settings.set_boolean).not.toHaveBeenCalled();
-        expect(notify).toHaveBeenCalledOnce();
-        expect(notify).toHaveBeenCalledWith(
-            'Battery Boost',
-            'Battery boost ended — configured limit restored'
-        );
+        expect(notify).not.toHaveBeenCalled();
     });
 
     it('ignores a pending operation that fails after disable', async () => {
@@ -440,24 +432,4 @@ describe('BatteryBoostExtension mode changes', () => {
         expect(harness.settings.value).toBe(false);
     });
 
-    it('contains notification failures after applying a mode change', async () => {
-        const consoleError = vi.spyOn(console, 'error').mockImplementation(
-            () => {});
-        const harness = enableExtension(true);
-        harness.service.setThresholdEnabled.mockResolvedValue(true);
-        notify.mockImplementationOnce(() => {
-            throw new Error('notification service unavailable');
-        });
-
-        harness.settings.emitChanged();
-
-        await vi.waitFor(() => {
-            expect(consoleError).toHaveBeenCalledWith(
-                expect.stringContaining(
-                    '[BatteryBoost] Failed to show notification: Error: notification service unavailable'
-                )
-            );
-        });
-        expect(harness.settings.value).toBe(true);
-    });
 });
