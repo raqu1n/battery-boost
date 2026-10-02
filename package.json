@@ -10,19 +10,23 @@
   "scripts": {
     "build": "tsc --project tsconfig.json",
     "typecheck": "tsc --project tsconfig.json --noEmit && tsc --project tsconfig.test.json",
+    "lint": "eslint --ext .js,.ts .",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "check:scripts": "bash -n scripts/build.sh && node --check scripts/check-upower.js",
     "check:schema": "glib-compile-schemas --strict --dry-run src/schemas",
-    "check": "npm run check:scripts && npm run check:schema && npm run typecheck && npm run test:coverage",
+    "check": "npm run check:scripts && npm run check:schema && npm run typecheck && npm run lint && npm run test:coverage",
     "test:upower": "npm run build && gjs -m scripts/check-upower.js"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@girs/gjs": "^4.1.0",
     "@girs/gnome-shell": "^50.0.4",
     "@types/node": "^24.13.3",
     "@vitest/coverage-v8": "^4.1.11",
-    "typescript": "^7.0.2",
+    "eslint": "^9.39.5",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.71.0",
     "vitest": "^4.1.11"
   }
 }

@@ -25,6 +25,7 @@ batteryhealth-widget/
 ├── .github/workflows/ci.yml                     # Automated checks on pushes and pull requests
 ├── package.json                                 # TypeScript scripts and development dependencies
 ├── package-lock.json                            # Locked development dependency versions
+├── eslint.config.js                             # ESLint rules for TypeScript and JavaScript
 ├── tsconfig.json                                # Strict TypeScript compiler configuration
 ├── tsconfig.test.json                           # Type-checking for tests and test configuration
 ├── vitest.config.ts                             # Unit test aliases, coverage, and thresholds
@@ -111,11 +112,12 @@ After editing the XML, validate it by running `./scripts/build.sh`.
 - **Configuration:** GSettings via XML schema
 - **Type definitions:** `@girs/gjs` and `@girs/gnome-shell`
 - **Build:** TypeScript compiler (`tsc`)
+- **Lint:** ESLint on TypeScript source, tests, and JavaScript tooling
 - **Build runtime:** Node.js 22.12 or newer (CI uses Node.js 24)
 - **Tests:** Vitest with Node-based GNOME/GJS boundary mocks
 - **Coverage:** Vitest V8 provider with enforced project thresholds
 - **Packaging:** `gnome-extensions pack`
-- **Validation:** Bash syntax checking, strict TypeScript checks, coverage-enforced tests, and GitHub Actions CI
+- **Validation:** Bash syntax checking, schema validation, strict TypeScript checks, ESLint, coverage-enforced tests, and GitHub Actions CI
 
 ## Build process
 
@@ -141,7 +143,8 @@ npm ci
 
 This produces `dist/battery-boost@raqu1n.github.io.shell-extension.zip`.
 
-Run `npm run typecheck` for a strict type check without emitting JavaScript. Use
+Run `npm run typecheck` for a strict type check without emitting JavaScript.
+`npm run lint` lints TypeScript source, tests, and JavaScript tooling. Use
 `npm run check` for the full local validation and `npm run test:upower` for the
 optional generated-proxy smoke test against the local UPower service.
 
