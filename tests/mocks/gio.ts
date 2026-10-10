@@ -10,6 +10,14 @@ export class Cancellable {
 
 export const DBUS_SYSTEM = Object.freeze({kind: 'system-bus'});
 
+export class ThemedIcon {
+    readonly name: string;
+
+    constructor(properties: {name: string}) {
+        this.name = properties.name;
+    }
+}
+
 export interface ProxyWrapperRecord {
     interfaceXml: string;
     newAsync: ReturnType<typeof vi.fn>;
@@ -28,6 +36,7 @@ export const makeProxyWrapper = vi.fn((interfaceXml: string) => {
 
 const Gio = {
     Cancellable,
+    ThemedIcon,
     DBus: {
         system: DBUS_SYSTEM,
     },
