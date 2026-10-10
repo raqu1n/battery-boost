@@ -275,7 +275,7 @@ describe('BatteryBoostExtension lifecycle and synchronization', () => {
         pending.resolve(true);
         await waitForAsyncWork();
 
-        expectOSD('Battery boost ended — configured limit restored');
+        expectOSD('Battery boost disabled');
         expect(showOSD).toHaveBeenCalledOnce();
     });
 
@@ -339,12 +339,12 @@ describe('BatteryBoostExtension mode changes', () => {
         {
             boostEnabled: true,
             thresholdEnabled: false,
-            message: 'Battery boost enabled: charging to 100%',
+            message: 'Battery boost enabled',
         },
         {
             boostEnabled: false,
             thresholdEnabled: true,
-            message: 'Battery boost ended — configured limit restored',
+            message: 'Battery boost disabled',
         },
     ])('shows an OSD after a successful mode change: $boostEnabled', async ({
         boostEnabled,
@@ -431,7 +431,7 @@ describe('BatteryBoostExtension mode changes', () => {
         expect(consoleError).not.toHaveBeenCalled();
         expect(harness.settings.set_boolean).not.toHaveBeenCalled();
         expect(showOSD).toHaveBeenCalledOnce();
-        expectOSD('Battery boost ended — configured limit restored');
+        expectOSD('Battery boost disabled');
     });
 
     it('suppresses a late success after a newer mode change succeeds', async () => {
@@ -443,7 +443,7 @@ describe('BatteryBoostExtension mode changes', () => {
         harness.settings.set_boolean('boost-enabled', false);
         await waitForAsyncWork();
 
-        expectOSD('Battery boost ended — configured limit restored');
+        expectOSD('Battery boost disabled');
         earlier.resolve(true);
         await waitForAsyncWork();
 
