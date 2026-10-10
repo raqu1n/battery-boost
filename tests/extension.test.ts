@@ -1,13 +1,13 @@
 import type Gio from 'gi://Gio';
 
-import {beforeEach, describe, expect, it, vi} from 'vitest';
+import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 
 import {
     isSignalHandlerBlocked,
     signalHandlerBlock,
     signalHandlerUnblock,
 } from './mocks/gobject.js';
-import {addExternalIndicator, notify} from './mocks/main.js';
+import {addExternalIndicator, notify, showOSD} from './mocks/main.js';
 import {deferred} from './helpers/upowerFakes.js';
 
 interface ServiceCallbacks {
@@ -98,6 +98,19 @@ class FakeSettings {
 async function waitForAsyncWork(): Promise<void> {
     await new Promise(resolve => setImmediate(resolve));
 }
+
+function expectOSD(message: string): void {
+    expect(showOSD).toHaveBeenCalledWith(
+        expect.objectContaining({name: 'battery-full-symbolic'}),
+        message,
+        null,
+        null
+    );
+}
+
+afterEach(() => {
+    expect(notify).not.toHaveBeenCalled();
+});
 
 interface FakeIndicator {
     destroy: ReturnType<typeof vi.fn<() => void>>;
@@ -193,6 +206,7 @@ describe('BatteryBoostExtension lifecycle and synchronization', () => {
 
         harness.service.callbacks.onThresholdChanged(false);
         expect(harness.settings.set_boolean).toHaveBeenCalledOnce();
+        expect(showOSD).not.toHaveBeenCalled();
     });
 
     it('shows boost as off when no supported threshold state is available', () => {
@@ -245,6 +259,49 @@ describe('BatteryBoostExtension lifecycle and synchronization', () => {
         );
     });
 
+    it('shows restoration only after a charge-cycle threshold request succeeds', async () => {
+        const harness = enableExtension(true);
+        const pending = deferred<boolean>();
+        harness.service.setThresholdEnabled.mockReturnValue(pending.promise);
+
+        harness.service.callbacks.onChargeCycleEnded();
+        harness.service.callbacks.onChargeCycleEnded();
+
+        expect(harness.settings.value).toBe(false);
+        expect(harness.service.setThresholdEnabled).toHaveBeenCalledExactlyOnceWith(
+            true);
+        expect(showOSD).not.toHaveBeenCalled();
+
+        pending.resolve(true);
+        await waitForAsyncWork();
+
+        expectOSD('Battery boost ended — configured limit restored');
+        expect(showOSD).toHaveBeenCalledOnce();
+    });
+
+    it('does not show an OSD for a charge-cycle event when boost is off', async () => {
+        const harness = enableExtension(false);
+
+        harness.service.callbacks.onChargeCycleEnded();
+        await waitForAsyncWork();
+
+        expect(harness.service.setThresholdEnabled).not.toHaveBeenCalled();
+        expect(showOSD).not.toHaveBeenCalled();
+    });
+
+    it('shows an error OSD when ending the charge cycle cannot update settings', () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        const harness = enableExtension(true);
+        harness.settings.set_boolean.mockImplementationOnce(() => {
+            throw new Error('settings backend failed');
+        });
+
+        harness.service.callbacks.onChargeCycleEnded();
+
+        expectOSD('Failed to change battery charge limit');
+        expect(harness.service.setThresholdEnabled).not.toHaveBeenCalled();
+    });
+
     it('stops monitoring and releases settings and UI resources on disable', () => {
         const harness = enableExtension();
         const queuedSettingsCallback = harness.settings
@@ -282,14 +339,17 @@ describe('BatteryBoostExtension mode changes', () => {
         {
             boostEnabled: true,
             thresholdEnabled: false,
+            message: 'Battery boost enabled: charging to 100%',
         },
         {
             boostEnabled: false,
             thresholdEnabled: true,
+            message: 'Battery boost ended — configured limit restored',
         },
-    ])('applies a successful mode change without notifying: $boostEnabled', async ({
+    ])('shows an OSD after a successful mode change: $boostEnabled', async ({
         boostEnabled,
         thresholdEnabled,
+        message,
     }) => {
         const harness = enableExtension(boostEnabled);
         harness.service.setThresholdEnabled.mockResolvedValue(true);
@@ -301,7 +361,8 @@ describe('BatteryBoostExtension mode changes', () => {
                 thresholdEnabled);
         });
         await waitForAsyncWork();
-        expect(notify).not.toHaveBeenCalled();
+        expectOSD(message);
+        expect(showOSD).toHaveBeenCalledOnce();
     });
 
     it('rolls back the setting and reports a current operation failure', async () => {
@@ -316,10 +377,7 @@ describe('BatteryBoostExtension mode changes', () => {
         await vi.waitFor(() => {
             expect(consoleError).toHaveBeenCalledWith(
                 '[BatteryBoost] Failed to set threshold: permission denied');
-            expect(notify).toHaveBeenCalledWith(
-                'Battery Boost',
-                'Failed to change battery charge limit'
-            );
+            expectOSD('Failed to change battery charge limit');
             expect(harness.settings.set_boolean).toHaveBeenCalledWith(
                 'boost-enabled',
                 false
@@ -342,7 +400,7 @@ describe('BatteryBoostExtension mode changes', () => {
         harness.settings.emitChanged();
         await waitForAsyncWork();
 
-        expect(notify).not.toHaveBeenCalled();
+        expect(showOSD).not.toHaveBeenCalled();
         expect(harness.settings.set_boolean).not.toHaveBeenCalled();
     });
 
@@ -372,7 +430,38 @@ describe('BatteryBoostExtension mode changes', () => {
 
         expect(consoleError).not.toHaveBeenCalled();
         expect(harness.settings.set_boolean).not.toHaveBeenCalled();
-        expect(notify).not.toHaveBeenCalled();
+        expect(showOSD).toHaveBeenCalledOnce();
+        expectOSD('Battery boost ended — configured limit restored');
+    });
+
+    it('suppresses a late success after a newer mode change succeeds', async () => {
+        const harness = enableExtension(true);
+        const earlier = deferred<boolean>();
+        harness.service.setThresholdEnabled.mockReturnValueOnce(earlier.promise);
+
+        harness.settings.emitChanged();
+        harness.settings.set_boolean('boost-enabled', false);
+        await waitForAsyncWork();
+
+        expectOSD('Battery boost ended — configured limit restored');
+        earlier.resolve(true);
+        await waitForAsyncWork();
+
+        expect(showOSD).toHaveBeenCalledOnce();
+    });
+
+    it('suppresses success after external threshold state supersedes the request', async () => {
+        const harness = enableExtension(true);
+        const pending = deferred<boolean>();
+        harness.service.setThresholdEnabled.mockReturnValueOnce(pending.promise);
+
+        harness.settings.emitChanged();
+        harness.service.callbacks.onThresholdChanged(true);
+        pending.resolve(true);
+        await waitForAsyncWork();
+
+        expect(harness.settings.value).toBe(false);
+        expect(showOSD).not.toHaveBeenCalled();
     });
 
     it('ignores a pending operation that fails after disable', async () => {
@@ -391,7 +480,7 @@ describe('BatteryBoostExtension mode changes', () => {
         await waitForAsyncWork();
 
         expect(consoleError).not.toHaveBeenCalled();
-        expect(notify).not.toHaveBeenCalled();
+        expect(showOSD).not.toHaveBeenCalled();
         expect(harness.settings.set_boolean).not.toHaveBeenCalled();
         expect(harness.service.stop).toHaveBeenCalledOnce();
     });
@@ -409,7 +498,7 @@ describe('BatteryBoostExtension mode changes', () => {
         pending.resolve(true);
         await waitForAsyncWork();
 
-        expect(notify).not.toHaveBeenCalled();
+        expect(showOSD).not.toHaveBeenCalled();
         expect(harness.settings.set_boolean).not.toHaveBeenCalled();
     });
 
@@ -427,9 +516,28 @@ describe('BatteryBoostExtension mode changes', () => {
         harness.settings.emitChanged();
 
         await vi.waitFor(() => {
-            expect(notify).toHaveBeenCalledWith('Battery Boost', message);
+            expectOSD(message);
         });
         expect(harness.settings.value).toBe(false);
     });
 
+    it('contains OSD failures after applying a mode change', async () => {
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(
+            () => {});
+        const harness = enableExtension(true);
+        showOSD.mockImplementationOnce(() => {
+            throw new Error('OSD manager unavailable');
+        });
+
+        harness.settings.emitChanged();
+        await waitForAsyncWork();
+
+        expect(consoleError).toHaveBeenCalledWith(
+            expect.stringContaining(
+                '[BatteryBoost] Failed to show OSD: Error: OSD manager unavailable'
+            )
+        );
+        expect(harness.settings.value).toBe(true);
+        expect(harness.settings.set_boolean).not.toHaveBeenCalled();
+    });
 });

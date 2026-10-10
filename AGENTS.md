@@ -38,6 +38,7 @@ build/, coverage/, dist/        Generated and ignored output
 - `BatteryToggle` binds `checked` bidirectionally to the public `boost-enabled` GSettings key.
 - `boost-enabled=false` means the configured charge limit is active; `true` requests one boost cycle. External writes must use the same apply, rollback, error-handling, and auto-revert path as UI changes.
 - Auto-revert only on a transition to AC-disconnected/discharging or to 100% charge, not just because the battery is already in either state.
+- Report successful boost changes and automatic limit restoration through GNOME Shell 50's OSD (`Main.osdWindowManager.showAll`), with a battery icon and no level bar. Errors also use the OSD; suppress stale results and passive threshold synchronization messages.
 - Inspect all batteries as needed, but monitor one present, threshold-capable battery at a time. An unsupported battery may be retained for reporting; never broadcast threshold writes to every battery.
 - Follow UPower owner and hotplug changes; retry transient setup/enumeration failures and poll while a known system battery is absent.
 - Preserve async safety: serialized discovery and last-request-wins threshold writes; lifecycle cancellation and device/operation guards prevent stale results changing current state.
